@@ -1,0 +1,18 @@
+{
+  "name": "Backbencher",
+  "short_name": "Backbencher",
+  "description": "বোটানি অনার্স ৩য় বর্ষের সম্পূর্ণ সাজেশন — Backbencher",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#FAF9F6",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

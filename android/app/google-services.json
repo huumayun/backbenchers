@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "879445393590",
+    "project_id": "botany-1d1e6",
+    "storage_bucket": "botany-1d1e6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:879445393590:android:413c517c90c76dd7936617",
+        "android_client_info": {
+          "package_name": "com.graamtech.suggestionhub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCx9R_pynWr2wVIb5EpfD8FUBFDo0kL76s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

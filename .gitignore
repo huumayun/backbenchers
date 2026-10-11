@@ -1,0 +1,30 @@
+# Sensitive environment variables
+.env.local
+.env.*.local
+
+# Local runtime store backup
+content/store-backup.json
+
+# Next.js
+.next/
+out/
+
+# Node.js
+node_modules/
+
+# Build files
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+npm-debug.log*
+*.tsbuildinfo
+
