@@ -271,7 +271,11 @@ function ReaderInner() {
       fromVault: boolean
     ) => {
       if (!active) return;
-      setPages(loadedPages);
+      const isBookUnlocked = isSubjectUnlocked(chapterIndex);
+      const sanitizedPages = isBookUnlocked
+        ? loadedPages.map((p) => ({ ...p, isLocked: false }))
+        : loadedPages;
+      setPages(sanitizedPages);
       if (tocData) setBookToc(tocData);
       setReadingFromOfflineVault(fromVault);
       setFetching(false);
@@ -344,6 +348,12 @@ function ReaderInner() {
       if (deviceId) headers["x-device-id"] = deviceId;
       if (activeUid) headers["x-user-uid"] = activeUid;
       if (sessionToken) headers["x-session-token"] = sessionToken;
+      const effectiveUnlocked = Array.from(
+        new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
+      );
+      if (effectiveUnlocked.length > 0) {
+        headers["x-unlocked-subjects"] = effectiveUnlocked.join(",");
+      }
 
       try {
         const r = await fetch(
@@ -426,6 +436,12 @@ function ReaderInner() {
       if (deviceId) headers["x-device-id"] = deviceId;
       if (activeUid) headers["x-user-uid"] = activeUid;
       if (sessionToken) headers["x-session-token"] = sessionToken;
+      const effectiveUnlocked = Array.from(
+        new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
+      );
+      if (effectiveUnlocked.length > 0) {
+        headers["x-unlocked-subjects"] = effectiveUnlocked.join(",");
+      }
 
       try {
         const r = await fetch(

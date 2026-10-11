@@ -20,6 +20,12 @@ import {
   wipeAllOfflineBooks,
   renewAllOfflineLeasesOnServer,
 } from "@/lib/offline/offlineStore";
+import { installCapacitorLocalApiBridge } from "@/lib/capacitor/localApiBridge";
+
+if (typeof window !== "undefined") {
+  installCapacitorLocalApiBridge();
+}
+
 
 export interface UserProfile {
   uid: string;
@@ -283,35 +289,62 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           if (Array.isArray(data.unlockedSubjects)) {
             const incoming = data.unlockedSubjects as string[];
-            const nextSorted = [...incoming].sort();
 
             setUnlockedSubjects((prev) => {
+              const merged = Array.from(new Set([...prev, ...incoming]));
               const prevSorted = [...prev].sort();
+              const mergedSorted = [...merged].sort();
+
+              // Self-heal Firestore if local state has unlocked subjects that a cold Vercel instance missed
+              if (merged.length > incoming.length) {
+                setDoc(
+                  doc(db, "users", uid),
+                  {
+                    uid,
+                    unlockedSubjects: merged,
+                    hasAccess: merged.length > 0,
+                  },
+                  { merge: true }
+                ).catch(() => {});
+                setDoc(
+                  doc(db, "user_reading_data", uid),
+                  {
+                    uid,
+                    unlockedSubjects: merged,
+                    updatedAt: new Date().toISOString(),
+                  },
+                  { merge: true }
+                ).catch(() => {});
+              }
+
               if (
-                prevSorted.length === nextSorted.length &&
-                prevSorted.every((val, idx) => val === nextSorted[idx])
+                prevSorted.length === mergedSorted.length &&
+                prevSorted.every((val, idx) => val === mergedSorted[idx])
               ) {
                 return prev;
               }
-              return incoming;
+              return merged;
             });
 
             setProfile((prev) => {
               if (!prev) return prev;
-              const prevSorted = Array.isArray(prev.unlockedSubjects)
-                ? [...prev.unlockedSubjects].sort()
+              const prevList = Array.isArray(prev.unlockedSubjects)
+                ? prev.unlockedSubjects
                 : [];
+              const merged = Array.from(new Set([...prevList, ...incoming]));
+              const prevSorted = [...prevList].sort();
+              const mergedSorted = [...merged].sort();
               if (
-                prevSorted.length === nextSorted.length &&
-                prevSorted.every((val, idx) => val === nextSorted[idx]) &&
-                prev.hasAccess === incoming.length > 0
+                prevSorted.length === mergedSorted.length &&
+                prevSorted.every((val, idx) => val === mergedSorted[idx]) &&
+                prev.hasAccess === merged.length > 0
               ) {
                 return prev;
               }
               const updated: UserProfile = {
                 ...prev,
-                unlockedSubjects: incoming,
-                hasAccess: incoming.length > 0,
+                unlockedSubjects: merged,
+                hasAccess: merged.length > 0,
               };
               try {
                 localStorage.setItem(
@@ -340,6 +373,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         bookmarks?: LocalBookmark[];
         progress?: ReadingProgressData;
         perBookProgress?: Record<string, ReadingProgressData>;
+        unlockedSubjects?: string[];
       },
       activeToken?: string | null
     ) => {
@@ -441,11 +475,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // fallback to client Firestore
       }
 
-      // 2. Also check client-side Firestore
+      // 2. Also check BOTH client-side Firestore user_reading_data/{uid} AND users/{uid}
       try {
-        const snap = await getDoc(doc(db, "user_reading_data", uid));
-        if (snap.exists()) {
-          const d = snap.data();
+        const [rSnap, uSnap] = await Promise.all([
+          getDoc(doc(db, "user_reading_data", uid)),
+          getDoc(doc(db, "users", uid)),
+        ]);
+        if (rSnap.exists()) {
+          const d = rSnap.data();
           if (cloudBm.length === 0 && Array.isArray(d.bookmarks))
             cloudBm = d.bookmarks as LocalBookmark[];
           if (!cloudProg && d.progress)
@@ -458,6 +495,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (Array.isArray(d.unlockedSubjects)) {
             cloudUnlocked = Array.from(
               new Set([...cloudUnlocked, ...(d.unlockedSubjects as string[])])
+            );
+          }
+        }
+        if (uSnap.exists()) {
+          const u = uSnap.data();
+          if (Array.isArray(u.unlockedSubjects)) {
+            cloudUnlocked = Array.from(
+              new Set([...cloudUnlocked, ...(u.unlockedSubjects as string[])])
             );
           }
         }
@@ -477,6 +522,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             return prev;
           }
           return merged;
+        });
+        setProfile((prev) => {
+          if (!prev) return prev;
+          const prevList = Array.isArray(prev.unlockedSubjects)
+            ? prev.unlockedSubjects
+            : [];
+          const merged = Array.from(new Set([...prevList, ...cloudUnlocked]));
+          const updated: UserProfile = {
+            ...prev,
+            unlockedSubjects: merged,
+            hasAccess: merged.length > 0,
+          };
+          try {
+            localStorage.setItem("ebook_user_profile", JSON.stringify(updated));
+          } catch {
+            // ignore
+          }
+          return updated;
         });
       }
 
@@ -1139,13 +1202,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isSubjectUnlocked = useCallback(
     (subjectIdOrChapterIndex: string | number): boolean => {
       if (profile?.role === "admin") return true;
+      const effectiveList = Array.from(
+        new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
+      );
       if (typeof subjectIdOrChapterIndex === "number") {
         const ch = CHAPTERS[subjectIdOrChapterIndex];
-        return Boolean(ch && unlockedSubjects.includes(ch.id));
+        return Boolean(ch && effectiveList.includes(ch.id));
       }
-      return unlockedSubjects.includes(subjectIdOrChapterIndex);
+      return effectiveList.includes(subjectIdOrChapterIndex);
     },
-    [unlockedSubjects, profile?.role]
+    [unlockedSubjects, profile?.unlockedSubjects, profile?.role]
   );
 
   const isBookSavedOffline = useCallback(
@@ -1229,12 +1295,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     ]
   );
 
+  const effectiveUnlockedList = Array.from(
+    new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
+  );
   const isLoggedIn = Boolean(profile || user);
   const hasAccess =
-    unlockedSubjects.length > 0 || profile?.role === "admin";
+    effectiveUnlockedList.length > 0 || profile?.role === "admin";
   const hasAllSubjectsUnlocked =
     profile?.role === "admin" ||
-    CHAPTERS.every((ch) => unlockedSubjects.includes(ch.id));
+    CHAPTERS.every((ch) => effectiveUnlockedList.includes(ch.id));
   const isAdmin = profile?.role === "admin";
 
   return (

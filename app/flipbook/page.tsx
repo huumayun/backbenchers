@@ -208,6 +208,12 @@ function FlipbookInner() {
         if (deviceId) headers["x-device-id"] = deviceId;
         if (activeUid) headers["x-user-uid"] = activeUid;
         if (sessionToken) headers["x-session-token"] = sessionToken;
+        const effectiveUnlocked = Array.from(
+          new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
+        );
+        if (effectiveUnlocked.length > 0) {
+          headers["x-unlocked-subjects"] = effectiveUnlocked.join(",");
+        }
 
         const r = await fetch(`/api/book-content?search=${encodeURIComponent(searchQuery)}`, {
           headers,
@@ -252,7 +258,11 @@ function FlipbookInner() {
     const loadFlipbook = async () => {
       const applyLoadedData = (loadedPages: FlipPageData[], tocData?: BookTocData) => {
         if (!active) return;
-        setPages(loadedPages);
+        const isBookUnlocked = isSubjectUnlocked(chapterIndex);
+        const sanitizedPages = isBookUnlocked
+          ? loadedPages.map((p) => ({ ...p, isLocked: false }))
+          : loadedPages;
+        setPages(sanitizedPages);
         if (tocData) setBookToc(tocData);
         setLoadingBook(false);
 
@@ -312,6 +322,12 @@ function FlipbookInner() {
         if (deviceId) headers["x-device-id"] = deviceId;
         if (activeUid) headers["x-user-uid"] = activeUid;
         if (sessionToken) headers["x-session-token"] = sessionToken;
+        const effectiveUnlocked = Array.from(
+          new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
+        );
+        if (effectiveUnlocked.length > 0) {
+          headers["x-unlocked-subjects"] = effectiveUnlocked.join(",");
+        }
 
         const r = await fetch(`/api/book-content?mode=flipbook&chapter=${chapterIndex}`, {
           headers,

@@ -57,8 +57,6 @@ export default function HomePage() {
 
   const router = useRouter();
   const [showBookmarksModal, setShowBookmarksModal] = useState(false);
-  const [showOfflineModal, setShowOfflineModal] = useState(false);
-  const [offlineFeedback, setOfflineFeedback] = useState<string | null>(null);
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<number | "all">("all");
 
   useEffect(() => {
@@ -92,20 +90,6 @@ export default function HomePage() {
       left: dir === "left" ? -220 : 220,
       behavior: "smooth",
     });
-  };
-
-  const handleOpenOfflineManager = () => {
-    if (unlockedSubjects.length === 0) {
-      setShowUnlockModal(true);
-      return;
-    }
-    setShowOfflineModal(true);
-  };
-
-  const handleToggleOfflineSubject = async (chapterIdx: number) => {
-    setOfflineFeedback(null);
-    const res = await toggleOfflineBook(chapterIdx);
-    setOfflineFeedback(res.message);
   };
 
   // Last reading book & exact URL where user left off
@@ -147,33 +131,45 @@ export default function HomePage() {
       />
 
       {/* Minimal Top Bar */}
-      <header className="max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-end gap-2.5 text-xs font-medium">
-        {isLoggedIn ? (
-          <>
-            <button
-              onClick={() => setShowUnlockModal(true)}
-              className="px-3.5 py-1.5 rounded-full bg-[#111111] text-white font-bold flex items-center gap-1.5 text-[11px] active:scale-95 transition cursor-pointer shadow-xs"
-            >
-              <Key size={11} />
-              <span>Unlock ({unlockedSubjects.length}/৭)</span>
-            </button>
+      <header className="max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between gap-2.5 text-xs font-medium">
+        <a
+          href="/Backbencher.apk"
+          download="Backbencher.apk"
+          className="px-3 py-1.5 rounded-full bg-black/[0.05] hover:bg-black/10 text-[#141413] font-bold flex items-center gap-1.5 text-[11px] active:scale-95 transition cursor-pointer border border-black/10"
+          title="অফলাইনে সাজেশন পড়তে Backbencher Android App ডাউনলোড করুন"
+        >
+          <Download size={12} />
+          <span>অ্যাপ ডাউনলোড (.APK)</span>
+        </a>
+
+        <div className="flex items-center gap-2.5">
+          {isLoggedIn ? (
+            <>
+              <button
+                onClick={() => setShowUnlockModal(true)}
+                className="px-3.5 py-1.5 rounded-full bg-[#111111] text-white font-bold flex items-center gap-1.5 text-[11px] active:scale-95 transition cursor-pointer shadow-xs"
+              >
+                <Key size={11} />
+                <span>Unlock ({unlockedSubjects.length}/৭)</span>
+              </button>
+              <Link
+                href="/dashboard"
+                className="opacity-75 hover:opacity-100 transition flex items-center gap-1 py-1 font-semibold"
+              >
+                <User size={14} />
+                <span>{profile?.displayName || "ড্যাশবোর্ড"}</span>
+              </Link>
+            </>
+          ) : (
             <Link
-              href="/dashboard"
+              href="/login"
               className="opacity-75 hover:opacity-100 transition flex items-center gap-1 py-1 font-semibold"
             >
               <User size={14} />
-              <span>{profile?.displayName || "ড্যাশবোর্ড"}</span>
+              <span>লগইন / রেজিস্টার</span>
             </Link>
-          </>
-        ) : (
-          <Link
-            href="/login"
-            className="opacity-75 hover:opacity-100 transition flex items-center gap-1 py-1 font-semibold"
-          >
-            <User size={14} />
-            <span>লগইন / রেজিস্টার</span>
-          </Link>
-        )}
+          )}
+        </div>
       </header>
 
       {/* Editorial Hero Title */}
@@ -291,7 +287,7 @@ export default function HomePage() {
               Pathology, Cytology & Genetics Books (২৩৩০০৯ – ২৩৩০১৩)
             </h2>
             <div className="flex items-center gap-1.5 text-xs opacity-50">
-              <span className="font-mono text-[11px]">3 books + Offline</span>
+              <span className="font-mono text-[11px]">3 books</span>
               <button
                 onClick={() => scrollShelf(shelfTwoRef, "left")}
                 className="p-1 hover:opacity-100 cursor-pointer"
@@ -363,39 +359,6 @@ export default function HomePage() {
                   </Link>
                 );
               })}
-
-              {/* 4th Card: In-App Offline Books Vault */}
-              <button
-                onClick={handleOpenOfflineManager}
-                className="snap-start shrink-0 w-[128px] sm:w-auto aspect-[3/4.2] rounded-xl p-3 sm:p-4 flex flex-col justify-between shadow-md active:scale-95 sm:hover:-translate-y-1.5 transition-all duration-300 bg-[#111111] text-white text-left cursor-pointer"
-              >
-                <div className="flex items-center justify-between w-full">
-                  <span className="text-[9px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-white text-black">
-                    OFFLINE
-                  </span>
-                  {offlineBookIndices.length > 0 ? (
-                    <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-emerald-400 text-black px-1.5 py-0.5 rounded-full">
-                      <Check size={9} /> {offlineBookIndices.length}টি সেভড
-                    </span>
-                  ) : (
-                    <Download size={12} className="opacity-80" />
-                  )}
-                </div>
-
-                <div className="my-auto py-1">
-                  <p className="text-[9px] uppercase tracking-wider opacity-60 mb-0.5">
-                    ইন-অ্যাপ অফলাইন ভল্ট
-                  </p>
-                  <h3 className="font-extrabold text-xs sm:text-sm leading-snug">
-                    ইন্টারনেট ছাড়া অ্যাপে পড়ুন
-                  </h3>
-                </div>
-
-                <div className="text-[9px] sm:text-[10px] opacity-75 flex items-center justify-between border-t border-white/15 pt-1.5 w-full">
-                  <span>শুধু অ্যাপে</span>
-                  <span>{unlockedSubjects.length > 0 ? "সেভ করুন" : "আনলক"}</span>
-                </div>
-              </button>
             </div>
 
             {/* Frosted Blue Glass Shelf Bar */}
@@ -405,126 +368,46 @@ export default function HomePage() {
             </div>
           </div>
         </div>
-      </main>
 
-      {/* In-App Offline Books Vault Modal */}
-      {showOfflineModal && (
-        <div
-          className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-3.5 sm:p-4"
-          onClick={() => setShowOfflineModal(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="bg-[#FAF9F6] text-[#141413] w-full max-w-md max-h-[82dvh] rounded-3xl shadow-[0_24px_70px_rgba(0,0,0,0.18)] border border-black/10 p-5 sm:p-6 flex flex-col overflow-hidden"
-          >
-            <div className="flex items-center justify-between pb-3.5 mb-3 border-b border-black/8 shrink-0">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-[#141413] text-white flex items-center justify-center shrink-0">
-                  <ShieldCheck size={15} />
-                </div>
-                <div>
-                  <h3 className="font-serif font-black text-base sm:text-lg tracking-tight leading-none">
-                    ইন-অ্যাপ অফলাইন বই ভল্ট
-                  </h3>
-                  <p className="text-[11px] opacity-55 mt-1">
-                    সেভ করা বই শুধুমাত্র এই অ্যাপের ভেতরেই ইন্টারনেট ছাড়া পড়া যাবে
-                  </p>
-                </div>
+        {/* Official Backbencher Android App Download Banner */}
+        <section className="px-1 sm:px-0 pt-1">
+          <div className="rounded-3xl bg-[#141413] text-[#FAF9F6] p-5 sm:p-7 shadow-[0_20px_50px_rgba(0,0,0,0.12)] border border-black/15 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
+            <div className="flex items-start gap-4 min-w-0">
+              <div className="w-13 h-13 sm:w-15 sm:h-15 rounded-2xl bg-black border border-white/15 flex items-center justify-center shrink-0 shadow-lg overflow-hidden">
+                <span className="font-serif font-black text-2xl sm:text-3xl text-white tracking-tight select-none">
+                  B
+                </span>
               </div>
-              <button
-                onClick={() => setShowOfflineModal(false)}
-                className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 flex items-center justify-center transition cursor-pointer shrink-0"
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider bg-white/10 text-emerald-300 px-2.5 py-0.5 rounded-full mb-1.5">
+                  <ShieldCheck size={11} />
+                  <span>Official Android App • Offline Edition</span>
+                </div>
+                <h2 className="font-serif font-black text-base sm:text-xl text-white leading-snug">
+                  অফলাইনে সাজেশন রাখতে ও সেরা রিডিং এক্সপেরিয়েন্স পেতে অ্যাপ ডাউনলোড করুন
+                </h2>
+                <p className="text-xs sm:text-[13px] text-white/75 mt-1.5 leading-relaxed max-w-2xl">
+                  অফলাইনে সাজেশন বই সেভ করে ইন্টারনেট ছাড়াই যেকোনো সময় পড়তে এবং ফুল-স্ক্রিন ফ্লিপবুক, ডার্ক/সেপিয়া মোড ও দ্রুত সার্চের সুন্দর এক্সপেরিয়েন্স পেতে আমাদের অফিসিয়াল <strong>Backbencher</strong> Android অ্যাপটি ইনস্টল করুন।
+                </p>
+              </div>
+            </div>
+
+            <div className="w-full sm:w-auto shrink-0 flex flex-col items-stretch sm:items-end gap-1.5">
+              <a
+                href="/Backbencher.apk"
+                download="Backbencher.apk"
+                className="w-full sm:w-auto px-5 py-3 rounded-full bg-white text-[#141413] hover:bg-neutral-100 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition cursor-pointer"
               >
-                <X size={15} />
-              </button>
-            </div>
-
-            <div className="bg-black/[0.03] border border-black/8 rounded-2xl px-3.5 py-2.5 mb-3 text-[11px] leading-relaxed text-[#141413]/75 shrink-0">
-              <strong>নিরাপত্তা নোট:</strong> কোনো ফাইল বা PDF ফোনের গ্যালারি বা ফাইল ম্যানেজারে ডাউনলোড হয় না—বইগুলো এনক্রিপ্টেড অবস্থায় শুধুমাত্র এই অ্যাপের ভেতরেই অফলাইনে পড়া যাবে।
-            </div>
-
-            {offlineFeedback && (
-              <div className="bg-[#141413] text-white text-[11px] font-medium px-3.5 py-2 rounded-xl mb-3 flex items-center justify-between gap-2 shrink-0">
-                <span>{offlineFeedback}</span>
-                <button
-                  onClick={() => setOfflineFeedback(null)}
-                  className="opacity-60 hover:opacity-100 cursor-pointer"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            )}
-
-            <div className="flex-1 overflow-y-auto no-scrollbar divide-y divide-black/6 bg-white rounded-2xl border border-black/8 px-3.5">
-              {CHAPTERS.map((ch) => {
-                const unlocked = isSubjectUnlocked(ch.id);
-                const savedOffline = isBookSavedOffline(ch.index);
-                const isSaving = savingOfflineChapter === ch.index;
-                const cleanTitle = ch.titleBn.replace(/^[০-৯1-9]+\.\s*/, "");
-
-                return (
-                  <div
-                    key={ch.id}
-                    className="py-3 flex items-center justify-between gap-2.5"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-mono font-bold bg-black/6 px-1.5 py-0.5 rounded">
-                          {ch.courseCode}
-                        </span>
-                        <span className="text-xs font-extrabold truncate">
-                          বই {ch.bookNumber}: {cleanTitle}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="shrink-0">
-                      {unlocked ? (
-                        <button
-                          onClick={() => handleToggleOfflineSubject(ch.index)}
-                          disabled={isSaving}
-                          className={`text-[11px] font-bold px-3 py-1.5 rounded-full flex items-center gap-1 transition cursor-pointer ${
-                            savedOffline
-                              ? "bg-emerald-500/15 text-emerald-800 border border-emerald-500/30"
-                              : "bg-[#141413] text-white hover:opacity-90"
-                          }`}
-                        >
-                          {isSaving ? (
-                            <>
-                              <Loader2 size={11} className="animate-spin" />
-                              <span>সেভ হচ্ছে...</span>
-                            </>
-                          ) : savedOffline ? (
-                            <>
-                              <Check size={11} />
-                              <span>অফলাইন (সরিয়ে ফেলুন)</span>
-                            </>
-                          ) : (
-                            <>
-                              <Download size={11} />
-                              <span>অফলাইনে সেভ</span>
-                            </>
-                          )}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setShowOfflineModal(false);
-                            setShowUnlockModal(true);
-                          }}
-                          className="text-[11px] font-bold bg-[#FAF9F6] border border-black/10 px-2.5 py-1 rounded-full inline-flex items-center gap-1 opacity-75 hover:opacity-100 cursor-pointer"
-                        >
-                          <Lock size={10} /> আনলক করুন
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+                <Download size={15} />
+                <span>অ্যাপ ডাউনলোড করুন (.APK)</span>
+              </a>
+              <span className="text-[10px] text-white/50 text-center sm:text-right font-mono">
+                Android 7.0+ • Safe &amp; Encrypted Offline Vault
+              </span>
             </div>
           </div>
-        </div>
-      )}
+        </section>
+      </main>
 
       {/* Subject-Wise Bookmarks Modal on Home Screen */}
       {showBookmarksModal && (

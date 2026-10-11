@@ -60,10 +60,19 @@ export async function POST(req: NextRequest) {
         ? CHAPTERS[chapterIndex].id
         : undefined);
 
+    const headerUnlockedRaw = req.headers.get("x-unlocked-subjects") || "";
+    const clientUnlocked = headerUnlockedRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const effectiveUnlocked = Array.from(
+      new Set([...sessionCheck.unlockedSubjects, ...clientUnlocked])
+    );
+
     if (action === "acquire" || action === "renew") {
       if (
         resolvedSubjectId &&
-        !sessionCheck.unlockedSubjects.includes(resolvedSubjectId) &&
+        !effectiveUnlocked.includes(resolvedSubjectId) &&
         sessionCheck.user?.role !== "admin"
       ) {
         return NextResponse.json(

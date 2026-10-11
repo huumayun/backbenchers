@@ -519,39 +519,74 @@ export async function getUserAccountById(
     );
   }
 
-  // Always check Firestore if missing or to sync latest session/unlockedSubjects
+  // Always check BOTH Firestore users/{uid} AND user_reading_data/{uid} so Vercel cold starts never miss unlockedSubjects
   if (uid) {
     try {
-      const snap = await getDoc(doc(db, "users", uid));
-      if (snap.exists()) {
-        const cloudUser = snap.data() as UserAccountRecord;
-        const localUser = store.users[uid];
-        // Merge unlockedSubjects from both local & cloud so unlocked subjects are never lost
-        const mergedSubjects = Array.from(
-          new Set([
-            ...(localUser ? normalizeUnlockedSubjects(localUser) : []),
-            ...normalizeUnlockedSubjects(cloudUser),
-          ])
-        );
+      const [userSnap, readingSnap] = await Promise.all([
+        getDoc(doc(db, "users", uid)),
+        getDoc(doc(db, "user_reading_data", uid)),
+      ]);
+
+      const cloudUser = userSnap.exists()
+        ? (userSnap.data() as UserAccountRecord)
+        : null;
+      const readingData = readingSnap.exists()
+        ? (readingSnap.data() as UserReadingDataRecord)
+        : null;
+      const localUser = store.users[uid];
+      const localReading = store.userReadingData[uid];
+
+      const mergedSubjects = Array.from(
+        new Set([
+          ...(localUser ? normalizeUnlockedSubjects(localUser) : []),
+          ...(cloudUser ? normalizeUnlockedSubjects(cloudUser) : []),
+          ...(Array.isArray(readingData?.unlockedSubjects)
+            ? readingData!.unlockedSubjects!.filter((id) =>
+                ALL_SUBJECT_IDS.includes(id)
+              )
+            : []),
+          ...(Array.isArray(localReading?.unlockedSubjects)
+            ? localReading.unlockedSubjects.filter((id) =>
+                ALL_SUBJECT_IDS.includes(id)
+              )
+            : []),
+        ])
+      );
+
+      if (cloudUser || localUser || mergedSubjects.length > 0) {
         user = {
           ...(localUser || {}),
-          ...cloudUser,
+          ...(cloudUser || {}),
           uid,
+          email: cloudUser?.email || localUser?.email || email || "",
+          displayName:
+            cloudUser?.displayName || localUser?.displayName || "পাঠক",
+          passwordHash:
+            cloudUser?.passwordHash || localUser?.passwordHash || "",
+          role: cloudUser?.role || localUser?.role || "reader",
+          createdAt:
+            cloudUser?.createdAt ||
+            localUser?.createdAt ||
+            new Date().toISOString(),
           unlockedSubjects: mergedSubjects,
-          hasAccess: mergedSubjects.length > 0 || Boolean(cloudUser.hasAccess),
-          // Prefer whichever activeSessionUpdatedAt is newer
+          hasAccess:
+            mergedSubjects.length > 0 || Boolean(cloudUser?.hasAccess),
           activeSessionId:
             localUser?.activeSessionUpdatedAt &&
             cloudUser?.activeSessionUpdatedAt &&
             localUser.activeSessionUpdatedAt > cloudUser.activeSessionUpdatedAt
               ? localUser.activeSessionId
-              : cloudUser.activeSessionId || localUser?.activeSessionId || null,
+              : cloudUser?.activeSessionId ||
+                localUser?.activeSessionId ||
+                null,
           activeSessionToken:
             localUser?.activeSessionUpdatedAt &&
             cloudUser?.activeSessionUpdatedAt &&
             localUser.activeSessionUpdatedAt > cloudUser.activeSessionUpdatedAt
               ? localUser.activeSessionToken
-              : cloudUser.activeSessionToken || localUser?.activeSessionToken || null,
+              : cloudUser?.activeSessionToken ||
+                localUser?.activeSessionToken ||
+                null,
         };
         store.users[uid] = user;
         saveLocalStore(store);

@@ -1,7 +1,7 @@
 {
   "appId": "com.graamtech.suggestionhub",
   "appName": "Backbencher",
-  "webDir": "public",
+  "webDir": "out",
   "bundledWebRuntime": false,
   "server": {
     "androidScheme": "https",

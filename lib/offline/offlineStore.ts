@@ -132,6 +132,21 @@ export async function saveBookForOfflineApp(params: {
 
   try {
     // 1. Acquire server-side Offline Device Lease (blocks other devices from logging in while offline book is active)
+    let localUnlockedList: string[] = [];
+    try {
+      const profRaw = localStorage.getItem("ebook_user_profile");
+      if (profRaw) {
+        const p = JSON.parse(profRaw);
+        if (Array.isArray(p?.unlockedSubjects)) {
+          localUnlockedList = p.unlockedSubjects;
+        }
+      }
+    } catch {}
+    if (!localUnlockedList.includes(chapter.id)) {
+      localUnlockedList.push(chapter.id);
+    }
+    const unlockedSubjectsHeader = localUnlockedList.join(",");
+
     const leaseRes = await fetch("/api/offline-lease", {
       method: "POST",
       headers: {
@@ -139,6 +154,7 @@ export async function saveBookForOfflineApp(params: {
         "x-user-uid": uid,
         "x-session-token": sessionToken,
         "x-device-id": deviceId,
+        "x-unlocked-subjects": unlockedSubjectsHeader,
       },
       body: JSON.stringify({
         action: "acquire",
@@ -162,6 +178,7 @@ export async function saveBookForOfflineApp(params: {
       "x-device-id": deviceId,
       "x-user-uid": uid,
       "x-session-token": sessionToken,
+      "x-unlocked-subjects": unlockedSubjectsHeader,
     };
 
     const [chapterRes, flipRes] = await Promise.all([
