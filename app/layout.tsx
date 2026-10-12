@@ -47,25 +47,44 @@ export default function RootLayout({
                 try {
                   var h = window.location.hostname;
                   var isDev = h === "localhost" || h === "127.0.0.1" || h.indexOf("192.168.") === 0;
-                  if (isDev && "serviceWorker" in navigator) {
-                    Promise.all([
-                      navigator.serviceWorker.getRegistrations().then(function(regs) {
-                        var hadSw = regs.length > 0;
-                        return Promise.all(regs.map(function(r) { return r.unregister(); })).then(function() { return hadSw; });
-                      }),
-                      "caches" in window
-                        ? caches.keys().then(function(keys) {
-                            var oldKeys = keys.filter(function(k) { return k.indexOf("ebook-app-shell") === 0; });
-                            var hadCache = oldKeys.length > 0;
-                            return Promise.all(oldKeys.map(function(k) { return caches.delete(k); })).then(function() { return hadCache; });
-                          })
-                        : Promise.resolve(false)
-                    ]).then(function(res) {
-                      if ((res[0] || res[1]) && !sessionStorage.getItem("ebook_sw_dev_purged")) {
-                        sessionStorage.setItem("ebook_sw_dev_purged", "1");
-                        window.location.reload();
-                      }
-                    });
+                  if ("serviceWorker" in navigator) {
+                    if (isDev) {
+                      Promise.all([
+                        navigator.serviceWorker.getRegistrations().then(function(regs) {
+                          var hadSw = regs.length > 0;
+                          return Promise.all(regs.map(function(r) { return r.unregister(); })).then(function() { return hadSw; });
+                        }),
+                        "caches" in window
+                          ? caches.keys().then(function(keys) {
+                              var oldKeys = keys.filter(function(k) { return k.indexOf("ebook-app-shell") === 0; });
+                              var hadCache = oldKeys.length > 0;
+                              return Promise.all(oldKeys.map(function(k) { return caches.delete(k); })).then(function() { return hadCache; });
+                            })
+                          : Promise.resolve(false)
+                      ]).then(function(res) {
+                        if ((res[0] || res[1]) && !sessionStorage.getItem("ebook_sw_dev_purged")) {
+                          sessionStorage.setItem("ebook_sw_dev_purged", "1");
+                          window.location.reload();
+                        }
+                      });
+                    } else if ("caches" in window) {
+                      caches.keys().then(function(keys) {
+                        var legacyKeys = keys.filter(function(k) {
+                          return k.indexOf("ebook-app-shell") === 0 && k !== "ebook-app-shell-v3";
+                        });
+                        if (legacyKeys.length > 0) {
+                          Promise.all(legacyKeys.map(function(k) { return caches.delete(k); })).then(function() {
+                            navigator.serviceWorker.getRegistrations().then(function(regs) {
+                              regs.forEach(function(r) { r.update(); });
+                            });
+                            if (!sessionStorage.getItem("ebook_sw_v3_migrated")) {
+                              sessionStorage.setItem("ebook_sw_v3_migrated", "1");
+                              window.location.reload();
+                            }
+                          });
+                        }
+                      });
+                    }
                   }
                 } catch (e) {}
               })();
