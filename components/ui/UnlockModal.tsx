@@ -16,6 +16,11 @@ import {
   Check,
   AlertTriangle,
 } from "lucide-react";
+import {
+  buildSmartWhatsAppUrl,
+  buildSmartTelegramUrl,
+  openExternalUrl,
+} from "@/lib/contactUtils";
 
 interface UnlockCardProps {
   onClose?: () => void;
@@ -113,44 +118,39 @@ export function UnlockCard({
   const totalCost = selectedToBuy.length * unitPrice;
 
   const buildTelegramPurchaseUrl = () => {
-    const base = settings.contactTelegram || "https://t.me/your_telegram_username";
+    const rawContact =
+      settings?.contactTelegram ||
+      settings?.telegramUsername ||
+      "https://t.me/your_telegram_username";
     const userLabel = profile?.email || user?.email || "";
     const subjectListText =
       selectedBookNames.length > 0
         ? selectedBookNames.join("\n• ")
         : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
-    const priceText = isOffer
-      ? `প্রতি বিষয় ৳${offerPrice} (অফার, পূর্বে ৳${regularPrice})`
-      : `প্রতি বিষয় ৳${regularPrice}`;
+    const priceText = `প্রতি বিষয় ৳${unitPrice}`;
     const msg = `আসসালামু আলাইকুম, আমি নিচের বিষয়গুলোর আনলক কোড নিতে চাই (${priceText}):\n• ${subjectListText}\nমোট: ৳${
       totalCost || unitPrice
     }\nআমার অ্যাকাউন্ট ইমেইল: ${userLabel}`;
 
-    if (base.includes("t.me/")) {
-      const separator = base.includes("?") ? "&" : "?";
-      return `${base}${separator}text=${encodeURIComponent(msg)}`;
-    }
-    return base;
+    return buildSmartTelegramUrl(rawContact, msg);
   };
 
   const buildWhatsAppPurchaseUrl = () => {
-    const num = (
-      settings.contactWhatsApp ||
-      settings.whatsappNumber ||
-      "01700000000"
-    ).replace(/[^0-9]/g, "");
+    const rawContact =
+      settings?.contactWhatsApp ||
+      settings?.whatsappNumber ||
+      "01700000000";
     const userLabel = profile?.email || user?.email || "";
     const subjectListText =
       selectedBookNames.length > 0
         ? selectedBookNames.join("\n• ")
         : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
-    const priceText = isOffer
-      ? `প্রতি বিষয় ৳${offerPrice} (অফার, পূর্বে ৳${regularPrice})`
-      : `প্রতি বিষয় ৳${regularPrice}`;
+    const priceText = `প্রতি বিষয় ৳${unitPrice}`;
     const msg = `আসসালামু আলাইকুম, আমি নিচের বিষয়গুলোর আনলক কোড নিতে চাই (${priceText}):\n• ${subjectListText}\nমোট: ৳${
       totalCost || unitPrice
     }\nআমার অ্যাকাউন্ট ইমেইল: ${userLabel}`;
-    return `https://wa.me/${num}?text=${encodeURIComponent(msg)}`;
+
+    return buildSmartWhatsAppUrl(rawContact, msg);
   };
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -493,28 +493,26 @@ export function UnlockCard({
                   {(settings.contactChannel === "telegram" ||
                     settings.contactChannel === "both" ||
                     !settings.contactChannel) && (
-                    <a
-                      href={buildTelegramPurchaseUrl()}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="bg-[#229ED9] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0"
+                    <button
+                      type="button"
+                      onClick={() => openExternalUrl(buildTelegramPurchaseUrl())}
+                      className="bg-[#229ED9] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0 cursor-pointer"
                     >
                       <MessageCircle size={12} />
                       <span>Telegram</span>
-                    </a>
+                    </button>
                   )}
 
                   {(settings.contactChannel === "whatsapp" ||
                     settings.contactChannel === "both") && (
-                    <a
-                      href={buildWhatsAppPurchaseUrl()}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="bg-[#25D366] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0"
+                    <button
+                      type="button"
+                      onClick={() => openExternalUrl(buildWhatsAppPurchaseUrl())}
+                      className="bg-[#25D366] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0 cursor-pointer"
                     >
                       <MessageCircle size={12} />
                       <span>WhatsApp</span>
-                    </a>
+                    </button>
                   )}
                 </div>
               </div>

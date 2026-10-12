@@ -27,6 +27,11 @@ import {
   Sparkles,
   ShieldCheck,
 } from "lucide-react";
+import {
+  buildSmartWhatsAppUrl,
+  buildSmartTelegramUrl,
+  openExternalUrl,
+} from "@/lib/contactUtils";
 
 function UnlockPageContent() {
   const router = useRouter();
@@ -108,8 +113,10 @@ function UnlockPageContent() {
   const totalCost = selectedToBuy.length * unitPrice;
 
   const buildTelegramUrl = () => {
-    const base =
-      settings.contactTelegram || "https://t.me/your_telegram_username";
+    const rawContact =
+      settings?.contactTelegram ||
+      settings?.telegramUsername ||
+      "https://t.me/your_telegram_username";
     const userEmail = profile?.email || user?.email || "";
     const listText =
       selectedBooks.length > 0
@@ -117,26 +124,19 @@ function UnlockPageContent() {
             .map((b) => `• বই ${b.bookNumber}: ${b.titleBn} (${b.courseCode})`)
             .join("\n")
         : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
-    const priceText = isOffer
-      ? `প্রতি বিষয় ৳${offerPrice} (অফার মূল্য, পূর্বে ৳${regularPrice})`
-      : `প্রতি বিষয় ৳${regularPrice}`;
+    const priceText = `প্রতি বিষয় ৳${unitPrice}`;
     const msg = `আসসালামু আলাইকুম, আমি Backbencher অ্যাপের নিচের বিষয়গুলো আনলক করতে চাই (${priceText}):\n${listText}\nমোট বিষয়: ${
       selectedBooks.length || 1
     }টি • মোট ফি: ৳${totalCost || unitPrice}\nআমার অ্যাকাউন্ট ইমেইল: ${userEmail}`;
 
-    if (base.includes("t.me/")) {
-      const sep = base.includes("?") ? "&" : "?";
-      return `${base}${sep}text=${encodeURIComponent(msg)}`;
-    }
-    return base;
+    return buildSmartTelegramUrl(rawContact, msg);
   };
 
   const buildWhatsAppUrl = () => {
-    const num = (
-      settings.contactWhatsApp ||
-      settings.whatsappNumber ||
-      "01700000000"
-    ).replace(/[^0-9]/g, "");
+    const rawContact =
+      settings?.contactWhatsApp ||
+      settings?.whatsappNumber ||
+      "01700000000";
     const userEmail = profile?.email || user?.email || "";
     const listText =
       selectedBooks.length > 0
@@ -144,14 +144,12 @@ function UnlockPageContent() {
             .map((b) => `• বই ${b.bookNumber}: ${b.titleBn} (${b.courseCode})`)
             .join("\n")
         : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
-    const priceText = isOffer
-      ? `প্রতি বিষয় ৳${offerPrice} (অফার মূল্য, পূর্বে ৳${regularPrice})`
-      : `প্রতি বিষয় ৳${regularPrice}`;
+    const priceText = `প্রতি বিষয় ৳${unitPrice}`;
     const msg = `আসসালামু আলাইকুম, আমি Backbencher অ্যাপের নিচের বিষয়গুলো আনলক করতে চাই (${priceText}):\n${listText}\nমোট বিষয়: ${
       selectedBooks.length || 1
     }টি • মোট ফি: ৳${totalCost || unitPrice}\nআমার অ্যাকাউন্ট ইমেইল: ${userEmail}`;
 
-    return `https://wa.me/${num}?text=${encodeURIComponent(msg)}`;
+    return buildSmartWhatsAppUrl(rawContact, msg);
   };
 
   const handleRedeemCode = async (e: React.FormEvent) => {
@@ -677,29 +675,27 @@ function UnlockPageContent() {
                 {(settings?.contactChannel === "telegram" ||
                   settings?.contactChannel === "both" ||
                   !settings?.contactChannel) && (
-                  <a
-                    href={buildTelegramUrl()}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full py-2.5 px-3.5 rounded-xl bg-[#229ED9] text-white hover:bg-[#1E88E5] font-semibold text-xs flex items-center justify-center gap-1.5 shadow-[0_2px_8px_rgba(34,158,217,0.3)] active:scale-98 transition"
+                  <button
+                    type="button"
+                    onClick={() => openExternalUrl(buildTelegramUrl())}
+                    className="w-full py-2.5 px-3.5 rounded-xl bg-[#229ED9] text-white hover:bg-[#1E88E5] font-semibold text-xs flex items-center justify-center gap-1.5 shadow-[0_2px_8px_rgba(34,158,217,0.3)] active:scale-98 transition cursor-pointer"
                   >
                     <Send size={14} />
                     <span>Telegram-এ কোড নিন</span>
-                  </a>
+                  </button>
                 )}
 
                 {(settings?.contactChannel === "whatsapp" ||
                   settings?.contactChannel === "both" ||
                   !settings?.contactChannel) && (
-                  <a
-                    href={buildWhatsAppUrl()}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full py-2.5 px-3.5 rounded-xl bg-[#25D366] text-white hover:bg-[#1EBE5D] font-semibold text-xs flex items-center justify-center gap-1.5 shadow-[0_2px_8px_rgba(37,211,102,0.3)] active:scale-98 transition"
+                  <button
+                    type="button"
+                    onClick={() => openExternalUrl(buildWhatsAppUrl())}
+                    className="w-full py-2.5 px-3.5 rounded-xl bg-[#25D366] text-white hover:bg-[#1EBE5D] font-semibold text-xs flex items-center justify-center gap-1.5 shadow-[0_2px_8px_rgba(37,211,102,0.3)] active:scale-98 transition cursor-pointer"
                   >
                     <MessageCircle size={14} />
                     <span>WhatsApp-এ মেসেজ দিন</span>
-                  </a>
+                  </button>
                 )}
               </div>
 

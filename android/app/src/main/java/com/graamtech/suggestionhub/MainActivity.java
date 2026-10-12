@@ -10,7 +10,12 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
+import android.content.Intent;
+import android.net.Uri;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.BridgeWebViewClient;
 
 public class MainActivity extends BridgeActivity {
     @Override
@@ -53,6 +58,54 @@ public class MainActivity extends BridgeActivity {
                 );
                 v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
                 return WindowInsetsCompat.CONSUMED;
+            });
+        }
+
+        // Seamlessly launch WhatsApp, WhatsApp Business, Telegram and system intent URLs
+        // without trapping them inside WebView or throwing ERR_UNKNOWN_URL_SCHEME
+        if (bridge != null) {
+            bridge.setWebViewClient(new BridgeWebViewClient(bridge) {
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                    if (request == null || request.getUrl() == null) {
+                        return super.shouldOverrideUrlLoading(view, request);
+                    }
+                    Uri url = request.getUrl();
+                    String scheme = url.getScheme();
+                    String urlStr = url.toString();
+
+                    if (scheme != null && (
+                        scheme.equalsIgnoreCase("whatsapp") ||
+                        scheme.equalsIgnoreCase("tg") ||
+                        scheme.equalsIgnoreCase("intent") ||
+                        urlStr.contains("wa.me") ||
+                        urlStr.contains("api.whatsapp.com") ||
+                        urlStr.contains("t.me")
+                    )) {
+                        try {
+                            Intent intent;
+                            if ("intent".equalsIgnoreCase(scheme)) {
+                                intent = Intent.parseUri(urlStr, Intent.URI_INTENT_SCHEME);
+                            } else {
+                                intent = new Intent(Intent.ACTION_VIEW, url);
+                            }
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(intent);
+                            return true;
+                        } catch (Exception e) {
+                            try {
+                                if ("whatsapp".equalsIgnoreCase(scheme)) {
+                                    Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(urlStr.replace("whatsapp://send/", "https://api.whatsapp.com/send/")));
+                                    browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    startActivity(browserIntent);
+                                    return true;
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                    }
+
+                    return super.shouldOverrideUrlLoading(view, request);
+                }
             });
         }
     }

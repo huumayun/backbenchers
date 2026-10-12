@@ -32,7 +32,15 @@ import {
   CheckCircle2,
   Clock,
   Layers,
+  HelpCircle,
+  Info,
+  Phone,
 } from "lucide-react";
+import {
+  buildSmartWhatsAppUrl,
+  buildSmartTelegramUrl,
+  openExternalUrl,
+} from "@/lib/contactUtils";
 
 interface CodeRecord {
   code: string;
@@ -954,194 +962,295 @@ export default function AdminPage() {
         {/* ============================================================== */}
         {/* TAB 3: CONTACT CHANNELS */}
         {/* ============================================================== */}
-        {activeTab === "channels" && (
-          <div className="max-w-2xl bg-white border border-gray-200 rounded-3xl p-6 sm:p-8 shadow-xs animate-in fade-in duration-150">
-            <div className="flex items-center gap-2.5 mb-2">
-              <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-700 flex items-center justify-center">
-                <MessageCircle size={18} />
+        {activeTab === "channels" && (() => {
+          const previewTelegramUrl = buildSmartTelegramUrl(
+            settingsForm.contactTelegram || settingsForm.telegramUsername,
+            "আসসালামু আলাইকুম, এটি ব্যাকবেঞ্চার অ্যাডমিন প্যানেল থেকে টেস্ট মেসেজ।"
+          );
+
+          const previewWhatsAppUrl = buildSmartWhatsAppUrl(
+            settingsForm.contactWhatsApp || settingsForm.whatsappNumber,
+            "আসসালামু আলাইকুম, এটি ব্যাকবেঞ্চার অ্যাডমিন প্যানেল থেকে টেস্ট মেসেজ।"
+          );
+
+          return (
+            <div className="max-w-2xl bg-white border border-gray-200 rounded-3xl p-6 sm:p-8 shadow-xs animate-in fade-in duration-150">
+              <div className="flex items-center gap-2.5 mb-2">
+                <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-700 flex items-center justify-center">
+                  <MessageCircle size={18} />
+                </div>
+                <div>
+                  <h2 className="font-serif font-black text-lg text-gray-900 leading-tight">
+                    যোগাযোগ ও সাপোর্ট মাধ্যম
+                  </h2>
+                  <p className="text-xs text-gray-500">
+                    কোন মাধ্যমে ইউজার কোড নেওয়ার জন্য যোগাযোগ করবে তা নিয়ন্ত্রণ ও টেস্ট করুন
+                  </p>
+                </div>
               </div>
-              <div>
-                <h2 className="font-serif font-black text-lg text-gray-900 leading-tight">
-                  যোগাযোগ ও সাপোর্ট মাধ্যম
-                </h2>
-                <p className="text-xs text-gray-500">
-                  কোন মাধ্যমে ইউজার কোড নেওয়ার জন্য যোগাযোগ করবে তা নির্বাচন করুন
-                </p>
+
+              {settingsSavedMsg && (
+                <div className="my-4 p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 font-bold flex items-center gap-2">
+                  <CheckCircle2 size={16} />
+                  <span>{settingsSavedMsg}</span>
+                </div>
+              )}
+
+              {/* Guidelines / Helper Card */}
+              <div className="my-5 p-4 rounded-2xl bg-gradient-to-br from-blue-50/70 to-indigo-50/50 border border-blue-200/80 text-xs text-gray-700 space-y-2.5">
+                <div className="flex items-center gap-2 text-blue-900 font-bold text-xs">
+                  <Info size={16} className="text-blue-600 shrink-0" />
+                  <span>কীভাবে সঠিক নম্বর বা লিংক যুক্ত করবেন? (সহজ গাইডলাইন)</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1 text-[11px] leading-relaxed">
+                  <div className="p-2.5 rounded-xl bg-white/80 border border-blue-100 space-y-1">
+                    <span className="font-bold text-emerald-700 flex items-center gap-1">
+                      <MessageCircle size={13} /> WhatsApp / WhatsApp Business:
+                    </span>
+                    <ul className="list-disc list-inside space-y-0.5 text-gray-600">
+                      <li>
+                        <strong>সাধারণ নম্বর:</strong> <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">017XXXXXXXX</code> বা <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">+88017...</code> লিখলে স্বয়ংক্রিয়ভাবে আন্তর্জাতিক লিংকে রূপান্তর হবে।
+                      </li>
+                      <li>
+                        <strong>WhatsApp Business লিঙ্ক:</strong> আপনার বিজনেস লিংক <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">wa.me/message/XXXX</code> বা <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">https://wa.me/message/...</code> সরাসরি দিন। কোনো অক্ষর মুছে যাবে না।
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="p-2.5 rounded-xl bg-white/80 border border-blue-100 space-y-1">
+                    <span className="font-bold text-[#229ED9] flex items-center gap-1">
+                      <Send size={13} /> Telegram:
+                    </span>
+                    <ul className="list-disc list-inside space-y-0.5 text-gray-600">
+                      <li>
+                        <strong>ইউজারনেম:</strong> <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">@your_username</code> বা শুধু <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">username</code> লিখুন।
+                      </li>
+                      <li>
+                        <strong>সরাসরি লিঙ্ক:</strong> <code className="bg-gray-100 px-1 py-0.5 rounded text-gray-800 font-mono">https://t.me/your_username</code> দিতে পারেন।
+                      </li>
+                    </ul>
+                  </div>
+                </div>
               </div>
+
+              <form onSubmit={handleSaveSettings} className="space-y-5 mt-6">
+                {/* Channel Selector */}
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-2">
+                    সাপোর্ট বাটন হিসেবে অ্যাপে কী কী দেখাবে?
+                  </label>
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          contactChannel: "telegram",
+                        })
+                      }
+                      className={`p-3 rounded-2xl border text-center transition cursor-pointer ${
+                        settingsForm.contactChannel === "telegram"
+                          ? "bg-[#229ED9]/10 border-[#229ED9] text-[#229ED9] font-bold shadow-xs"
+                          : "border-gray-200 hover:bg-gray-50 text-gray-600"
+                      }`}
+                    >
+                      <Send size={18} className="mx-auto mb-1" />
+                      <span className="text-xs block">Telegram Only</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettingsForm({
+                          ...settingsForm,
+                          contactChannel: "whatsapp",
+                        })
+                      }
+                      className={`p-3 rounded-2xl border text-center transition cursor-pointer ${
+                        settingsForm.contactChannel === "whatsapp"
+                          ? "bg-[#25D366]/10 border-[#25D366] text-[#25D366] font-bold shadow-xs"
+                          : "border-gray-200 hover:bg-gray-50 text-gray-600"
+                      }`}
+                    >
+                      <MessageCircle size={18} className="mx-auto mb-1" />
+                      <span className="text-xs block">WhatsApp Only</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettingsForm({ ...settingsForm, contactChannel: "both" })
+                      }
+                      className={`p-3 rounded-2xl border text-center transition cursor-pointer ${
+                        settingsForm.contactChannel === "both"
+                          ? "bg-[#141413] border-[#141413] text-white font-bold shadow-xs"
+                          : "border-gray-200 hover:bg-gray-50 text-gray-600"
+                      }`}
+                    >
+                      <Layers size={18} className="mx-auto mb-1" />
+                      <span className="text-xs block">দুটোই (Both)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Telegram Config */}
+                <div className="p-4 rounded-2xl bg-gray-50 border border-gray-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Send size={16} className="text-[#229ED9]" />
+                      <h4 className="text-xs font-bold text-gray-900">
+                        Telegram কনফিগারেশন
+                      </h4>
+                    </div>
+                    {previewTelegramUrl && (
+                      <button
+                        type="button"
+                        onClick={() => openExternalUrl(previewTelegramUrl)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#229ED9] text-white text-[11px] font-bold hover:bg-[#1E88E5] transition cursor-pointer shadow-2xs active:scale-95"
+                      >
+                        <ExternalLink size={12} />
+                        <span>টেস্ট করুন (Test Telegram)</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-600 mb-1">
+                        Telegram ইউজারনেম
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.telegramUsername}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            telegramUsername: e.target.value,
+                          })
+                        }
+                        placeholder="@your_telegram"
+                        className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-600 mb-1">
+                        Telegram চ্যাট লিঙ্ক
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.contactTelegram}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            contactTelegram: e.target.value,
+                          })
+                        }
+                        placeholder="https://t.me/your_telegram"
+                        className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Telegram URL Live Preview */}
+                  <div className="p-2.5 rounded-xl bg-white border border-gray-200 text-[11px] space-y-1">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 block tracking-wider">
+                      প্রস্তুতকৃত লাইভ লিঙ্ক প্রিভিউ:
+                    </span>
+                    <div className="font-mono text-gray-800 break-all select-all text-[11px] bg-gray-50 p-1.5 rounded">
+                      {previewTelegramUrl || "এখনও কোনো Telegram ইউজারনেম বা লিংক দেওয়া হয়নি"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* WhatsApp Config */}
+                <div className="p-4 rounded-2xl bg-gray-50 border border-gray-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <MessageCircle size={16} className="text-[#25D366]" />
+                      <h4 className="text-xs font-bold text-gray-900">
+                        WhatsApp কনফিগারেশন
+                      </h4>
+                    </div>
+                    {previewWhatsAppUrl && (
+                      <button
+                        type="button"
+                        onClick={() => openExternalUrl(previewWhatsAppUrl)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#25D366] text-white text-[11px] font-bold hover:bg-[#1EBE5D] transition cursor-pointer shadow-2xs active:scale-95"
+                      >
+                        <ExternalLink size={12} />
+                        <span>টেস্ট করুন (Test WhatsApp)</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-600 mb-1">
+                        WhatsApp নম্বর (পার্সোনাল নম্বর)
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.whatsappNumber}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            whatsappNumber: e.target.value,
+                          })
+                        }
+                        placeholder="017XXXXXXXX বা 88017XXXXXXXX"
+                        className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white font-mono"
+                      />
+                      <span className="text-[10px] text-gray-400 mt-1 block">
+                        উদাহরণ: 01768802953
+                      </span>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-600 mb-1">
+                        WhatsApp লিঙ্ক (বা WhatsApp Business লিঙ্ক)
+                      </label>
+                      <input
+                        type="text"
+                        value={settingsForm.contactWhatsApp}
+                        onChange={(e) =>
+                          setSettingsForm({
+                            ...settingsForm,
+                            contactWhatsApp: e.target.value,
+                          })
+                        }
+                        placeholder="https://wa.me/message/... বা 88017..."
+                        className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white font-mono"
+                      />
+                      <span className="text-[10px] text-gray-400 mt-1 block">
+                        বিজনেস লিঙ্ক থাকলে সরাসরি এখানে পেস্ট করুন
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* WhatsApp URL Live Preview */}
+                  <div className="p-2.5 rounded-xl bg-white border border-gray-200 text-[11px] space-y-1">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 block tracking-wider">
+                      প্রস্তুতকৃত লাইভ লিঙ্ক প্রিভিউ:
+                    </span>
+                    <div className="font-mono text-gray-800 break-all select-all text-[11px] bg-gray-50 p-1.5 rounded">
+                      {previewWhatsAppUrl || "এখনও কোনো WhatsApp নম্বর বা লিংক দেওয়া হয়নি"}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={savingSettings}
+                  className="w-full py-3 rounded-2xl bg-[#141413] text-white font-bold text-xs sm:text-sm hover:opacity-90 transition active:scale-98 cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  <Save size={15} />
+                  <span>
+                    {savingSettings ? "সেভ হচ্ছে..." : "যোগাযোগ সেটিংস সেভ করুন"}
+                  </span>
+                </button>
+              </form>
             </div>
-
-            {settingsSavedMsg && (
-              <div className="my-4 p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 font-bold flex items-center gap-2">
-                <CheckCircle2 size={16} />
-                <span>{settingsSavedMsg}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSaveSettings} className="space-y-5 mt-6">
-              {/* Channel Selector */}
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-2">
-                  সাপোর্ট বাটন হিসেবে কী কী দেখাবে?
-                </label>
-                <div className="grid grid-cols-3 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSettingsForm({
-                        ...settingsForm,
-                        contactChannel: "telegram",
-                      })
-                    }
-                    className={`p-3 rounded-2xl border text-center transition cursor-pointer ${
-                      settingsForm.contactChannel === "telegram"
-                        ? "bg-[#229ED9]/10 border-[#229ED9] text-[#229ED9] font-bold shadow-xs"
-                        : "border-gray-200 hover:bg-gray-50 text-gray-600"
-                    }`}
-                  >
-                    <Send size={18} className="mx-auto mb-1" />
-                    <span className="text-xs block">Telegram Only</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSettingsForm({
-                        ...settingsForm,
-                        contactChannel: "whatsapp",
-                      })
-                    }
-                    className={`p-3 rounded-2xl border text-center transition cursor-pointer ${
-                      settingsForm.contactChannel === "whatsapp"
-                        ? "bg-[#25D366]/10 border-[#25D366] text-[#25D366] font-bold shadow-xs"
-                        : "border-gray-200 hover:bg-gray-50 text-gray-600"
-                    }`}
-                  >
-                    <MessageCircle size={18} className="mx-auto mb-1" />
-                    <span className="text-xs block">WhatsApp Only</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setSettingsForm({ ...settingsForm, contactChannel: "both" })
-                    }
-                    className={`p-3 rounded-2xl border text-center transition cursor-pointer ${
-                      settingsForm.contactChannel === "both"
-                        ? "bg-[#141413] border-[#141413] text-white font-bold shadow-xs"
-                        : "border-gray-200 hover:bg-gray-50 text-gray-600"
-                    }`}
-                  >
-                    <Layers size={18} className="mx-auto mb-1" />
-                    <span className="text-xs block">দুটোই (Both)</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Telegram Config */}
-              <div className="p-4 rounded-2xl bg-gray-50 border border-gray-200 space-y-3">
-                <div className="flex items-center gap-2">
-                  <Send size={16} className="text-[#229ED9]" />
-                  <h4 className="text-xs font-bold text-gray-900">
-                    Telegram কনফিগারেশন
-                  </h4>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                      Telegram ইউজারনেম
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsForm.telegramUsername}
-                      onChange={(e) =>
-                        setSettingsForm({
-                          ...settingsForm,
-                          telegramUsername: e.target.value,
-                        })
-                      }
-                      placeholder="@your_telegram"
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                      Telegram চ্যাট লিঙ্ক
-                    </label>
-                    <input
-                      type="url"
-                      value={settingsForm.contactTelegram}
-                      onChange={(e) =>
-                        setSettingsForm({
-                          ...settingsForm,
-                          contactTelegram: e.target.value,
-                        })
-                      }
-                      placeholder="https://t.me/your_telegram"
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* WhatsApp Config */}
-              <div className="p-4 rounded-2xl bg-gray-50 border border-gray-200 space-y-3">
-                <div className="flex items-center gap-2">
-                  <MessageCircle size={16} className="text-[#25D366]" />
-                  <h4 className="text-xs font-bold text-gray-900">
-                    WhatsApp কনফিগারেশন
-                  </h4>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                      WhatsApp নম্বর (দেশীয় কোড সহ)
-                    </label>
-                    <input
-                      type="text"
-                      value={settingsForm.whatsappNumber}
-                      onChange={(e) =>
-                        setSettingsForm({
-                          ...settingsForm,
-                          whatsappNumber: e.target.value,
-                        })
-                      }
-                      placeholder="88017XXXXXXXX"
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-600 mb-1">
-                      WhatsApp ডিরেক্ট লিঙ্ক
-                    </label>
-                    <input
-                      type="url"
-                      value={settingsForm.contactWhatsApp}
-                      onChange={(e) =>
-                        setSettingsForm({
-                          ...settingsForm,
-                          contactWhatsApp: e.target.value,
-                        })
-                      }
-                      placeholder="https://wa.me/8801700000000"
-                      className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs focus:outline-black bg-white"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={savingSettings}
-                className="w-full py-3 rounded-2xl bg-[#141413] text-white font-bold text-xs sm:text-sm hover:opacity-90 transition active:scale-98 cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                <Save size={15} />
-                <span>
-                  {savingSettings ? "সেভ হচ্ছে..." : "যোগাযোগ সেটিংস সেভ করুন"}
-                </span>
-              </button>
-            </form>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ============================================================== */}
         {/* TAB 4: CODES MANAGEMENT */}
