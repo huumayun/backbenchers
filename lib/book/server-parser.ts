@@ -124,13 +124,16 @@ function splitSectionIntoPages(
   }
 
   const blocks: string[] = [];
-  if (indices[0] > 0) {
-    blocks.push(sectionInnerHtml.slice(0, indices[0]));
-  }
+  const prefix = indices[0] > 0 ? sectionInnerHtml.slice(0, indices[0]) : "";
   for (let i = 0; i < indices.length; i++) {
     const start = indices[i];
     const end = i + 1 < indices.length ? indices[i + 1] : sectionInnerHtml.length;
-    blocks.push(sectionInnerHtml.slice(start, end));
+    const blockContent = sectionInnerHtml.slice(start, end);
+    if (i === 0) {
+      blocks.push(prefix + blockContent);
+    } else {
+      blocks.push(blockContent);
+    }
   }
 
   const totalLen = blocks.reduce((acc, b) => acc + b.length, 0);

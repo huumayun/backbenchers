@@ -10,7 +10,8 @@ import {
   searchOfflineVaultBooks,
   OfflineSearchHit,
 } from "@/lib/offline/offlineStore";
-import UnlockModal, { UnlockCard } from "@/components/ui/UnlockModal";
+import OfflineDownloadModal from "@/components/OfflineDownloadModal";
+import { recordReadingHeartbeat } from "@/lib/readingStats";
 import {
   ChevronLeft,
   ChevronRight,
@@ -84,8 +85,8 @@ function FlipbookInner() {
     sessionToken,
     profile,
     user,
+    isLoggedIn,
     handleSessionInvalidated,
-    setShowUnlockModal,
     updateProgress,
     bookmarks,
     addBookmarkItem,
@@ -97,6 +98,17 @@ function FlipbookInner() {
 
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  const navigateToUnlockOrLogin = (chIdx = chapterIndex) => {
+    if (isLoggedIn) {
+      router.push(`/unlock?ch=${chIdx}`);
+    } else {
+      router.push(
+        `/login?redirect=${encodeURIComponent(`/unlock?ch=${chIdx}`)}`
+      );
+    }
+  };
+
   const initialChParam = parseInt(searchParams.get("ch") || "0", 10);
   const initialPageParam = parseInt(searchParams.get("page") || "1", 10);
 
@@ -110,9 +122,23 @@ function FlipbookInner() {
   const isSavingThisBook = savingOfflineChapter === chapterIndex;
   const [isReadingOffline, setIsReadingOffline] = useState(false);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
+  const [showOfflineDownloadAnim, setShowOfflineDownloadAnim] = useState(false);
+  const [offlinePendingNotice, setOfflinePendingNotice] = useState<string | null>(null);
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
 
   const handleToggleOffline = async () => {
     setOfflineNotice(null);
+    if (!currentBookOfflineSaved) {
+      setShowOfflineDownloadAnim(true);
+      const res = await toggleOfflineBook(chapterIndex);
+      setOfflinePendingNotice(res.message);
+    } else {
+      setShowDeleteConfirmModal(true);
+    }
+  };
+
+  const handleConfirmDeleteOffline = async () => {
+    setShowDeleteConfirmModal(false);
     const res = await toggleOfflineBook(chapterIndex);
     setOfflineNotice(res.message);
     setTimeout(() => setOfflineNotice(null), 3500);
@@ -163,6 +189,14 @@ function FlipbookInner() {
       // ignore prefetch errors when offline
     }
   }, [router]);
+
+  // Record reading heartbeat every 10s to accumulate reader study time
+  useEffect(() => {
+    const timer = setInterval(() => {
+      recordReadingHeartbeat(10);
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
 
   const navigateOfflineSafe = useCallback(
     (targetUrl: string) => {
@@ -548,11 +582,39 @@ function FlipbookInner() {
         {!pData.isLocked ? (
           <div className="w-full max-w-full overflow-x-hidden" dangerouslySetInnerHTML={{ __html: pData.html }} />
         ) : (
-          <div className="py-4 px-1 flex flex-col items-center justify-center">
-            <UnlockCard
-              defaultSubjectId={currentBook.id}
-              title={`বই ${currentBook.bookNumber}-এর পৃষ্ঠা ${pData.pageNumber} আনলক করুন`}
-            />
+          <div className="py-8 px-4 flex flex-col items-center justify-center text-center">
+            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md p-6 sm:p-8 text-center space-y-4 shadow-xl max-w-md w-full">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-600 dark:text-amber-400 mx-auto flex items-center justify-center">
+                <Lock size={22} />
+              </div>
+              <div>
+                <h3 className="text-base sm:text-lg font-bold text-[#141413] dark:text-white">
+                  বই {currentBook.bookNumber}-এর পৃষ্ঠা {pData.pageNumber} লক করা
+                </h3>
+                <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm mx-auto leading-relaxed">
+                  {!isLoggedIn
+                    ? "বইটি পড়তে এবং আনলক করতে প্রথমে আপনার অ্যাকাউন্টে লগইন করুন।"
+                    : `${currentBook.titleBn}-এর সম্পূর্ণ পৃষ্ঠা ও উত্তর পড়তে এবং আনলক কোড এন্টার করতে বিস্তারিত আনলক পেজে যান।`}
+                </p>
+              </div>
+              <div>
+                <Link
+                  href={
+                    !isLoggedIn
+                      ? `/login?redirect=${encodeURIComponent(`/unlock?ch=${chapterIndex}`)}`
+                      : `/unlock?ch=${chapterIndex}`
+                  }
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-xs sm:text-sm shadow-md transition active:scale-95 cursor-pointer"
+                >
+                  <Key size={14} />
+                  <span>
+                    {!isLoggedIn
+                      ? "লগইন করে আনলক করুন →"
+                      : "বই আনলক করুন (বিস্তারিত পেজ) →"}
+                  </span>
+                </Link>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -587,8 +649,6 @@ function FlipbookInner() {
       onTouchEnd={handleTouchEnd}
       className={`h-dvh overflow-hidden flex flex-col justify-between transition-colors duration-300 ${outerBg}`}
     >
-      <UnlockModal />
-
       {/* Clean Flipbook Typography, Diagrams & Responsive Tables */}
       <style
         dangerouslySetInnerHTML={{
@@ -778,14 +838,14 @@ function FlipbookInner() {
             <button
               onClick={handleToggleOffline}
               disabled={isSavingThisBook}
-              className={`text-[11px] sm:text-xs font-semibold px-2.5 sm:px-3 py-1 rounded-full flex items-center gap-1 cursor-pointer transition ${
+              className={`text-[11px] sm:text-xs font-semibold px-2.5 sm:px-3 py-1 rounded-full flex items-center gap-1.5 cursor-pointer transition shadow-xs ${
                 currentBookOfflineSaved
-                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30"
+                  ? "bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-500/60 shadow-[0_2px_8px_rgba(16,185,129,0.35)] active:scale-95"
                   : "bg-black/6 hover:bg-black/10 dark:bg-white/10"
               }`}
               title={
                 currentBookOfflineSaved
-                  ? "অ্যাপে অফলাইনে সেভ করা আছে (সরানোর জন্য ক্লিক করুন)"
+                  ? "বইটি অফলাইনে সংরক্ষিত আছে (মুছে ফেলতে ক্লিক করুন)"
                   : "অ্যাপের ভেতরে অফলাইনে পড়ার জন্য সেভ করুন"
               }
             >
@@ -796,7 +856,7 @@ function FlipbookInner() {
                 </>
               ) : currentBookOfflineSaved ? (
                 <>
-                  <Check size={11} />
+                  <Check size={12} strokeWidth={3} className="text-white" />
                   <span>অফলাইন</span>
                 </>
               ) : (
@@ -808,8 +868,8 @@ function FlipbookInner() {
             </button>
           ) : (
             <button
-              onClick={() => setShowUnlockModal(true)}
-              className="text-[11px] sm:text-xs font-semibold px-3 py-1 rounded-full bg-black text-white flex items-center gap-1 cursor-pointer"
+              onClick={() => navigateToUnlockOrLogin(chapterIndex)}
+              className="text-[11px] sm:text-xs font-bold px-3 py-1 rounded-full bg-amber-400 text-amber-950 hover:bg-amber-300 shadow-xs flex items-center gap-1 cursor-pointer transition"
             >
               <Key size={11} /> আনলক
             </button>
@@ -1302,15 +1362,17 @@ function FlipbookInner() {
                 {/* ক / খ / গ বিভাগ Filter Tabs */}
                 <div className="grid grid-cols-4 gap-1 bg-black/5 p-1 rounded-2xl mb-3 shrink-0">
                   {[
-                    { id: "all", label: "সব বিভাগ" },
-                    { id: "ka", label: "ক-বিভাগ" },
+                    { id: "all", label: "সব বিভাগ", locked: false },
+                    { id: "ka", label: "ক-বিভাগ", locked: false },
                     {
                       id: "kha",
-                      label: !currentBookUnlocked ? "খ-বিভাগ 🔒" : "খ-বিভাগ",
+                      label: "খ-বিভাগ",
+                      locked: !currentBookUnlocked,
                     },
                     {
                       id: "ga",
-                      label: !currentBookUnlocked ? "গ-বিভাগ 🔒" : "গ-বিভাগ",
+                      label: "গ-বিভাগ",
+                      locked: !currentBookUnlocked,
                     },
                   ].map((tab) => (
                     <button
@@ -1318,13 +1380,14 @@ function FlipbookInner() {
                       onClick={() =>
                         setTocTab(tab.id as "all" | "ka" | "kha" | "ga")
                       }
-                      className={`py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer ${
+                      className={`py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer flex items-center justify-center gap-1 ${
                         tocTab === tab.id
                           ? "bg-[#141413] text-white shadow-xs"
                           : "text-[#141413]/70 hover:text-[#141413]"
                       }`}
                     >
-                      {tab.label}
+                      <span>{tab.label}</span>
+                      {tab.locked && <Lock size={11} className="opacity-70 shrink-0" />}
                     </button>
                   ))}
                 </div>
@@ -1430,7 +1493,7 @@ function FlipbookInner() {
                             type="button"
                             onClick={() => {
                               setShowToc(false);
-                              setShowUnlockModal(true);
+                              navigateToUnlockOrLogin(chapterIndex);
                             }}
                             className="w-full text-left rounded-2xl border border-black/10 bg-white/80 hover:bg-white px-3.5 py-3 flex items-center justify-between gap-2 transition cursor-pointer"
                           >
@@ -1447,8 +1510,8 @@ function FlipbookInner() {
                                 </span>
                               </div>
                             </div>
-                            <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-1 rounded-full shrink-0">
-                              🔒 পেইড
+                            <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-1 rounded-full shrink-0 flex items-center gap-1">
+                              <Lock size={10} /> লকড
                             </span>
                           </button>
                         )}
@@ -1464,8 +1527,8 @@ function FlipbookInner() {
                           খ-বিভাগ • সংক্ষিপ্ত প্রশ্ন
                         </span>
                         {!currentBookUnlocked ? (
-                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full">
-                            🔒 পেইড (Paid)
+                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                            <Lock size={10} /> লকড
                           </span>
                         ) : (
                           <span className="text-[10px] opacity-50">
@@ -1510,9 +1573,9 @@ function FlipbookInner() {
                             type="button"
                             onClick={() => {
                               setShowToc(false);
-                              setShowUnlockModal(true);
+                              navigateToUnlockOrLogin(chapterIndex);
                             }}
-                            className="shrink-0 bg-[#141413] text-white text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer hover:opacity-90 transition"
+                            className="shrink-0 bg-amber-400 text-amber-950 hover:bg-amber-300 text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer transition shadow-xs"
                           >
                             আনলক করুন
                           </button>
@@ -1529,8 +1592,8 @@ function FlipbookInner() {
                           গ-বিভাগ • রচনামূলক প্রশ্ন
                         </span>
                         {!currentBookUnlocked ? (
-                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full">
-                            🔒 পেইড (Paid)
+                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                            <Lock size={10} /> লকড
                           </span>
                         ) : (
                           <span className="text-[10px] opacity-50">
@@ -1575,9 +1638,9 @@ function FlipbookInner() {
                             type="button"
                             onClick={() => {
                               setShowToc(false);
-                              setShowUnlockModal(true);
+                              navigateToUnlockOrLogin(chapterIndex);
                             }}
-                            className="shrink-0 bg-[#141413] text-white text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer hover:opacity-90 transition"
+                            className="shrink-0 bg-amber-400 text-amber-950 hover:bg-amber-300 text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer transition shadow-xs"
                           >
                             আনলক করুন
                           </button>
@@ -1588,6 +1651,65 @@ function FlipbookInner() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Dynamic Offline Download Progress Animation */}
+      <OfflineDownloadModal
+        isOpen={showOfflineDownloadAnim}
+        bookNumber={currentBook.bookNumber}
+        bookTitle={currentBook.titleBn}
+        totalPages={currentBook.endPage - currentBook.startPage + 1}
+        onComplete={() => {
+          setShowOfflineDownloadAnim(false);
+          if (offlinePendingNotice) {
+            setOfflineNotice(offlinePendingNotice);
+            setOfflinePendingNotice(null);
+            setTimeout(() => setOfflineNotice(null), 3500);
+          }
+        }}
+      />
+
+      {/* Offline Book Delete Confirmation Modal */}
+      {showDeleteConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div
+            className="w-full max-w-sm bg-white dark:bg-[#1C1C1E] text-[#141413] dark:text-white rounded-3xl p-6 shadow-2xl border border-black/10 dark:border-white/10 text-center space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 mx-auto flex items-center justify-center">
+              <Trash2 size={22} />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="text-base font-bold text-[#141413] dark:text-white">
+                অফলাইন বই মুছে ফেলতে চান?
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed max-w-xs mx-auto">
+                আপনি কি <span className="font-bold text-[#141413] dark:text-white">বই {currentBook.bookNumber}</span> ({currentBook.titleBn})-এর সংরক্ষিত অফলাইন ডেটা মুছে ফেলতে চান?
+              </p>
+              <p className="text-[11px] text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 rounded-xl p-2.5 mt-2">
+                পরবর্তীতে ইন্টারনেট ছাড়া সরাসরি পড়তে চাইলে বইটি আবার অফলাইনে সেভ করতে হবে।
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirmModal(false)}
+                className="flex-1 py-2.5 rounded-full border border-gray-300 dark:border-zinc-700 text-xs font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-zinc-800 transition cursor-pointer"
+              >
+                বাতিল
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteOffline}
+                className="flex-1 py-2.5 rounded-full bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md transition cursor-pointer"
+              >
+                মুছে ফেলুন
+              </button>
+            </div>
           </div>
         </div>
       )}

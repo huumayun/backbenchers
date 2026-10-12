@@ -72,6 +72,10 @@ export interface UserAccountRecord {
 
 export interface SiteSettings {
   price: string;
+  regularPrice?: number;
+  offerPrice?: number;
+  isOfferActive?: boolean;
+  contactChannel?: "telegram" | "whatsapp" | "both";
   paymentMethods: string;
   whatsappNumber: string;
   contactWhatsApp: string;
@@ -127,6 +131,10 @@ const STORE_PATH = join(process.cwd(), "content", "store-backup.json");
 
 const DEFAULT_SETTINGS: SiteSettings = {
   price: "৳৪৯ (প্রতি বিষয়)",
+  regularPrice: 49,
+  offerPrice: 39,
+  isOfferActive: false,
+  contactChannel: "both",
   paymentMethods: "বিকাশ / নগদ (Send Money / Personal): 017XX-XXXXXX",
   whatsappNumber: "017XX-XXXXXX",
   contactWhatsApp: BOOK_INFO.contactWhatsApp,
@@ -134,7 +142,7 @@ const DEFAULT_SETTINGS: SiteSettings = {
   contactTelegram: BOOK_INFO.contactTelegram,
   freePagesLimit: BOOK_INFO.freePagesLimit,
   announcement:
-    "প্রতি বিষয় মাত্র ৳৪৯! আপনার পছন্দের বিষয়গুলো সিলেক্ট করে টেলিগ্রামে মেসেজ পাঠিয়ে আনলক কোড নিন।",
+    "আপনার পছন্দের বিষয় সিলেক্ট করে মেসেজ পাঠিয়ে আনলক কোড সংগ্রহ করুন।",
 };
 
 // Global in-memory cache + concurrency lock for code redemption
@@ -515,7 +523,7 @@ export async function getUserAccountById(
   if (!user && email) {
     const cleanEmail = email.toLowerCase().trim();
     user = Object.values(store.users).find(
-      (u) => u.email.toLowerCase() === cleanEmail
+      (u) => (u?.email || "").toLowerCase().trim() === cleanEmail
     );
   }
 
@@ -1043,7 +1051,7 @@ export async function registerUserAccount(
 
   // Check if user already exists in local store or Firestore
   const existing = Object.values(store.users).find(
-    (u) => u.email.toLowerCase() === normalizedEmail
+    (u) => (u?.email || "").toLowerCase().trim() === normalizedEmail
   );
   if (existing) {
     return { success: false, message: "এই ইমেইলে আগেই অ্যাকাউন্ট আছে। লগইন করুন।" };
@@ -1090,7 +1098,7 @@ export async function loginUserAccount(
   const store = loadLocalStore();
 
   let found = Object.values(store.users).find(
-    (u) => u.email.toLowerCase() === normalizedEmail
+    (u) => (u?.email || "").toLowerCase().trim() === normalizedEmail
   );
 
   const deterministicUid =

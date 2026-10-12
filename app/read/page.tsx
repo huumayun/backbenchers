@@ -9,7 +9,8 @@ import {
   getOfflineBookData,
   searchOfflineVaultBooks,
 } from "@/lib/offline/offlineStore";
-import UnlockModal, { UnlockCard } from "@/components/ui/UnlockModal";
+import OfflineDownloadModal from "@/components/OfflineDownloadModal";
+import { recordReadingHeartbeat } from "@/lib/readingStats";
 import {
   ChevronLeft,
   ChevronRight,
@@ -88,6 +89,7 @@ function ReaderInner() {
     sessionToken,
     profile,
     user,
+    isLoggedIn,
     handleSessionInvalidated,
     addBookmarkItem,
     removeBookmarkItem,
@@ -101,6 +103,17 @@ function ReaderInner() {
 
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  const navigateToUnlockOrLogin = (chIdx = chapterIndex) => {
+    if (isLoggedIn) {
+      router.push(`/unlock?ch=${chIdx}`);
+    } else {
+      router.push(
+        `/login?redirect=${encodeURIComponent(`/unlock?ch=${chIdx}`)}`
+      );
+    }
+  };
+
   const initCh = parseInt(searchParams.get("ch") || "0", 10);
   const initPage = parseInt(searchParams.get("page") || "0", 10);
   const initOffset = parseInt(searchParams.get("offset") || "0", 10);
@@ -175,6 +188,22 @@ function ReaderInner() {
   const [offlineErrorBanner, setOfflineErrorBanner] = useState<string | null>(null);
   const [readingFromOfflineVault, setReadingFromOfflineVault] = useState(false);
   const [activePageNum, setActivePageNum] = useState(initPage || 1);
+  const [visiblePagesLimit, setVisiblePagesLimit] = useState(
+    initPage ? Math.max(3, initPage + 2) : 3
+  );
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-hide header on scroll down, show on scroll up
+  const [isHeaderVisible, setIsHeaderVisible] = useState(true);
+  const lastScrollYRef = useRef<number>(0);
+
+  // Prevent repeated unwanted scroll-to-top resets while user is reading
+  const initialScrollDoneRef = useRef<boolean>(false);
+  const userHasScrolledRef = useRef<boolean>(false);
+  const activePageNumRef = useRef<number>(activePageNum);
+  activePageNumRef.current = activePageNum;
+  const updateProgressRef = useRef(updateProgress);
+  updateProgressRef.current = updateProgress;
 
   // Ref to track exact target page & scroll offset across chapter switches
   const pendingScrollRef = useRef<{ page: number; offset: number } | null>(
@@ -184,22 +213,45 @@ function ReaderInner() {
   const contentRef = useRef<HTMLDivElement>(null);
   const currentChapter = CHAPTERS[chapterIndex] || CHAPTERS[0];
 
-  // Scroll to exact page + exact offset inside that page
-  const scrollToPageAndOffset = useCallback((pageNum: number, offset = 0) => {
-    const el = document.getElementById(`reader-page-${pageNum}`);
-    if (!el) return false;
-    const rect = el.getBoundingClientRect();
-    const absoluteElementTop = rect.top + window.scrollY;
-    const targetY = Math.max(0, absoluteElementTop + offset - 64);
-    window.scrollTo({ top: targetY, behavior: "smooth" });
-    setActivePageNum(pageNum);
-    return true;
+  // Reveal header automatically whenever user opens TOC, Bookmark, Font, or Search menus
+  useEffect(() => {
+    if (showTocSheet || showFontPopover || showBookmarkPopover || showSearchModal) {
+      setIsHeaderVisible(true);
+    }
+  }, [showTocSheet, showFontPopover, showBookmarkPopover, showSearchModal]);
+
+  const ensurePageRendered = useCallback((pageNum: number) => {
+    setVisiblePagesLimit((prev) => Math.max(prev, pageNum + 2));
   }, []);
+
+  // Scroll to exact page + exact offset inside that page
+  const scrollToPageAndOffset = useCallback(
+    (pageNum: number, offset = 0) => {
+      ensurePageRendered(pageNum);
+      const tryScroll = () => {
+        const el = document.getElementById(`reader-page-${pageNum}`);
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        const absoluteElementTop = rect.top + window.scrollY;
+        const targetY = Math.max(0, absoluteElementTop + offset - 64);
+        window.scrollTo({ top: targetY, behavior: "smooth" });
+        setActivePageNum(pageNum);
+        return true;
+      };
+
+      if (!tryScroll()) {
+        setTimeout(tryScroll, 60);
+      }
+      return true;
+    },
+    [ensurePageRendered]
+  );
 
   // Scroll directly to a specific question ID (or its page if locked)
   const jumpToQuestion = useCallback(
     (pageNum: number, questionId: string) => {
       setShowTocSheet(false);
+      ensurePageRendered(pageNum);
       setActivePageNum(pageNum);
       setTimeout(() => {
         const qEl = document.getElementById(questionId);
@@ -212,9 +264,9 @@ function ReaderInner() {
         } else {
           scrollToPageAndOffset(pageNum, 0);
         }
-      }, 60);
+      }, 70);
     },
-    [scrollToPageAndOffset]
+    [ensurePageRendered, scrollToPageAndOffset]
   );
 
   const lastQueryStringRef = useRef<string>("");
@@ -231,9 +283,11 @@ function ReaderInner() {
     const qOffset = parseInt(searchParams.get("offset") || "0", 10);
 
     if (qCh >= 0 && qCh < CHAPTERS.length && qCh !== chapterIndex) {
+      initialScrollDoneRef.current = false;
       pendingScrollRef.current = qPage ? { page: qPage, offset: qOffset } : null;
       setChapterIndex(qCh);
-    } else if (qPage > 0) {
+    } else if (qPage > 0 && !initialScrollDoneRef.current) {
+      initialScrollDoneRef.current = true;
       pendingScrollRef.current = { page: qPage, offset: qOffset };
       setTimeout(() => {
         if (pendingScrollRef.current) {
@@ -247,11 +301,34 @@ function ReaderInner() {
     }
   }, [searchParams, chapterIndex, scrollToPageAndOffset]);
 
+  // Record reading heartbeat every 10s to accumulate reader study time
+  useEffect(() => {
+    const timer = setInterval(() => {
+      recordReadingHeartbeat(10);
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
   const activeUid = profile?.uid || user?.uid || "";
   const currentBookUnlocked = isSubjectUnlocked(chapterIndex);
   const currentBookOfflineSaved = isBookSavedOffline(chapterIndex);
 
+  const [showOfflineDownloadAnim, setShowOfflineDownloadAnim] = useState(false);
+  const [offlinePendingMsg, setOfflinePendingMsg] = useState<string | null>(null);
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
+
   const handleToggleOfflineSave = async () => {
+    if (!currentBookOfflineSaved) {
+      setShowOfflineDownloadAnim(true);
+      const res = await toggleOfflineBook(chapterIndex);
+      setOfflinePendingMsg(res.message);
+    } else {
+      setShowDeleteConfirmModal(true);
+    }
+  };
+
+  const handleConfirmDeleteOffline = async () => {
+    setShowDeleteConfirmModal(false);
     const res = await toggleOfflineBook(chapterIndex);
     setOfflineToastMsg(res.message);
     setTimeout(() => setOfflineToastMsg(null), 4000);
@@ -287,6 +364,9 @@ function ReaderInner() {
         const firstPage = loadedPages[0]?.pageNumber || currentChapter.startPage;
         const target = pendingScrollRef.current;
         const initialActivePage = target?.page || firstPage;
+        setVisiblePagesLimit((prev) =>
+          Math.max(prev, Math.max(3, initialActivePage + 2))
+        );
         setActivePageNum(initialActivePage);
 
         updateProgress({
@@ -304,7 +384,11 @@ function ReaderInner() {
             scrollToPageAndOffset(target.page, target.offset);
             pendingScrollRef.current = null;
           }, 220);
-        } else {
+        } else if (
+          !userHasScrolledRef.current &&
+          typeof window !== "undefined" &&
+          window.scrollY > 0
+        ) {
           window.scrollTo({ top: 0, behavior: "smooth" });
         }
       }
@@ -478,8 +562,27 @@ function ReaderInner() {
   // Real-time Scroll Spy: detects exact active page & offset inside that page as user scrolls
   useEffect(() => {
     const onScroll = () => {
-      const viewportCheckY = window.scrollY + window.innerHeight * 0.32;
-      let detectedPage = activePageNum;
+      const currentScrollY = window.scrollY;
+      const scrollDelta = currentScrollY - lastScrollYRef.current;
+
+      if (Math.abs(currentScrollY) > 20) {
+        userHasScrolledRef.current = true;
+      }
+
+      // Auto-hide header on scroll down, show on scroll up or near top
+      if (currentScrollY <= 60) {
+        setIsHeaderVisible(true);
+      } else if (scrollDelta > 8) {
+        // Scrolling down -> hide header
+        setIsHeaderVisible(false);
+      } else if (scrollDelta < -8) {
+        // Scrolling up -> reveal header
+        setIsHeaderVisible(true);
+      }
+      lastScrollYRef.current = currentScrollY;
+
+      const viewportCheckY = currentScrollY + window.innerHeight * 0.32;
+      let detectedPage = activePageNumRef.current;
       let detectedOffset = 0;
 
       const sections = document.querySelectorAll<HTMLElement>(
@@ -491,24 +594,34 @@ function ReaderInner() {
           const num = parseInt(sec.id.replace("reader-page-", ""), 10);
           if (!isNaN(num)) {
             detectedPage = num;
-            detectedOffset = Math.max(0, Math.round(window.scrollY - top));
+            detectedOffset = Math.max(0, Math.round(currentScrollY - top));
           }
         }
       });
 
-      if (detectedPage !== activePageNum) {
+      if (detectedPage !== activePageNumRef.current) {
         setActivePageNum(detectedPage);
       }
 
-      const scrollTop = window.scrollY;
+      // Progressive loading scroll trigger
+      const distFromBottom =
+        document.documentElement.scrollHeight -
+        (currentScrollY + window.innerHeight);
+      if (distFromBottom < 1000) {
+        setVisiblePagesLimit((prev) => {
+          if (prev >= pages.length) return prev;
+          return Math.min(prev + 3, pages.length);
+        });
+      }
+
       const maxScroll =
         document.documentElement.scrollHeight - window.innerHeight;
       const pct =
         maxScroll > 0
-          ? Math.min(100, Math.round((scrollTop / maxScroll) * 100))
+          ? Math.min(100, Math.round((currentScrollY / maxScroll) * 100))
           : 0;
 
-      updateProgress({
+      updateProgressRef.current({
         chapterIndex,
         pageNumber: detectedPage,
         pageOffset: detectedOffset,
@@ -519,13 +632,14 @@ function ReaderInner() {
 
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, [chapterIndex, activePageNum, updateProgress]);
+  }, [chapterIndex, pages.length]);
 
   const goToChapter = useCallback(
     (idx: number, targetPage?: number, targetOffset = 0) => {
       if (idx < 0 || idx >= CHAPTERS.length) return;
       setShowTocSheet(false);
       setShowBookmarkPopover(false);
+      setIsHeaderVisible(true);
 
       if (idx === chapterIndex) {
         if (targetPage) {
@@ -534,6 +648,8 @@ function ReaderInner() {
           window.scrollTo({ top: 0, behavior: "smooth" });
         }
       } else {
+        userHasScrolledRef.current = false;
+        initialScrollDoneRef.current = false;
         pendingScrollRef.current = targetPage
           ? { page: targetPage, offset: targetOffset }
           : null;
@@ -605,6 +721,30 @@ function ReaderInner() {
 
   const unlockedPages = pages.filter((p) => !p.isLocked);
   const lockedPages = pages.filter((p) => p.isLocked);
+  const visibleUnlockedPages = unlockedPages.slice(0, visiblePagesLimit);
+  const hasMoreUnlockedPages = visiblePagesLimit < unlockedPages.length;
+
+  // Progressive loading observer for the bottom sentinel
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisiblePagesLimit((prev) => {
+            if (prev >= unlockedPages.length) return prev;
+            return Math.min(prev + 3, unlockedPages.length);
+          });
+        }
+      },
+      { rootMargin: "600px 0px" }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [unlockedPages.length]);
+
   // Filter bookmarks ONLY for this specific book/subject!
   const currentBookBookmarks = bookmarks.filter(
     (b) => b.chapterIndex === chapterIndex
@@ -624,8 +764,6 @@ function ReaderInner() {
     <div
       className={`min-h-dvh overflow-x-hidden transition-colors duration-300 ${themeClasses}`}
     >
-      <UnlockModal />
-
       {/* Mobile-Responsive Editorial Typography */}
       <style
         dangerouslySetInnerHTML={{
@@ -793,7 +931,11 @@ function ReaderInner() {
 
       {/* Minimal Top Bar (Borderless for seamless full-screen status bar) */}
       <header
-        className={`sticky top-0 z-30 px-4 sm:px-8 h-12 sm:h-14 flex items-center justify-between transition-colors ${
+        className={`sticky top-0 z-30 px-4 sm:px-8 h-12 sm:h-14 flex items-center justify-between transition-all duration-300 ease-in-out ${
+          isHeaderVisible
+            ? "translate-y-0 opacity-100"
+            : "-translate-y-full opacity-0 pointer-events-none"
+        } ${
           theme === "dark"
             ? "bg-[#141413]/95"
             : theme === "sepia"
@@ -819,35 +961,38 @@ function ReaderInner() {
         <div className="flex items-center gap-1.5">
           {!currentBookUnlocked ? (
             <button
-              onClick={() => setShowUnlockModal(true)}
-              className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-black text-white dark:bg-white dark:text-black flex items-center gap-1 cursor-pointer"
+              type="button"
+              onClick={() => navigateToUnlockOrLogin(chapterIndex)}
+              className="text-[11px] font-bold px-3 py-1 rounded-full bg-amber-400 text-amber-950 hover:bg-amber-300 shadow-xs flex items-center gap-1 cursor-pointer transition"
             >
-              <Key size={11} /> আনলক
+              <Key size={11} /> {isLoggedIn ? "আনলক" : "লগইন"}
             </button>
           ) : (
             <button
               onClick={handleToggleOfflineSave}
               disabled={savingOfflineChapter === chapterIndex}
-              className={`text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1 transition cursor-pointer ${
+              className={`text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5 transition cursor-pointer shadow-xs ${
                 currentBookOfflineSaved
-                  ? "bg-black/8 text-current border border-current/20"
-                  : "bg-black text-white dark:bg-white dark:text-black"
+                  ? "bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-500/60 shadow-[0_2px_8px_rgba(16,185,129,0.35)] active:scale-95"
+                  : "bg-black text-white hover:bg-gray-800 dark:bg-white dark:text-black"
               }`}
               title={
                 currentBookOfflineSaved
-                  ? "অ্যাপের অফলাইনে সেভ করা আছে (ক্লিক করলে অফলাইন থেকে রিমুভ হবে)"
-                  : "ইন্টারনেট ছাড়া অ্যাপের ভেতরে পড়ার জন্য অফলাইনে সেভ করুন"
+                  ? "বইটি অফলাইনে সংরক্ষিত আছে (মুছে ফেলতে ক্লিক করুন)"
+                  : "ইন্টারনেট ছাড়া সরাসরি পড়ার জন্য অফলাইনে সেভ করুন"
               }
             >
               {savingOfflineChapter === chapterIndex ? (
                 <span>সেভ হচ্ছে...</span>
               ) : currentBookOfflineSaved ? (
                 <>
-                  <Check size={11} strokeWidth={3} /> অফলাইন
+                  <Check size={12} strokeWidth={3} className="text-white" />
+                  <span>অফলাইন</span>
                 </>
               ) : (
                 <>
-                  <Download size={11} /> অফলাইনে সেভ
+                  <Download size={11} />
+                  <span>অফলাইনে সেভ</span>
                 </>
               )}
             </button>
@@ -868,6 +1013,9 @@ function ReaderInner() {
       {/* Main Editorial Reading Column */}
       <main
         ref={contentRef}
+        onClick={() => {
+          if (!isHeaderVisible) setIsHeaderVisible(true);
+        }}
         className="max-w-[650px] sm:max-w-2xl md:max-w-3xl lg:max-w-4xl mx-auto px-4 sm:px-10 pt-5 sm:pt-10 pb-36"
       >
         {offlineToastMsg && (
@@ -916,24 +1064,30 @@ function ReaderInner() {
                     key={sec.id}
                     onClick={() => {
                       if (isSecLocked) {
-                        setShowUnlockModal(true);
+                        navigateToUnlockOrLogin(chapterIndex);
                         return;
                       }
                       const ok = scrollToPageAndOffset(sec.startPage, 0);
-                      if (!ok) setShowUnlockModal(true);
+                      if (!ok) navigateToUnlockOrLogin(chapterIndex);
                     }}
-                    className={`text-[11px] sm:text-xs px-3 py-1 rounded-full border transition cursor-pointer ${
+                    className={`inline-flex items-center gap-1.5 text-[11px] sm:text-xs px-3 py-1 rounded-full border transition cursor-pointer ${
                       theme === "dark"
                         ? "border-white/15 active:bg-white/10 text-gray-300"
                         : "border-black/15 active:bg-black/5 text-gray-700"
                     }`}
                   >
-                    {sec.label.split(" ")[0]}{" "}
-                    {!currentBookUnlocked
-                      ? idx === 0
-                        ? "(১০টি ফ্রি)"
-                        : "🔒 পেইড"
-                      : `(${sec.questionCountBn}) • পৃ. ${sec.startPage}–${sec.endPage}`}
+                    <span>{sec.label.split(" ")[0]}</span>
+                    {!currentBookUnlocked ? (
+                      idx === 0 ? (
+                        <span className="opacity-75">(১০টি ফ্রি)</span>
+                      ) : (
+                        <Lock size={12} className="opacity-75 shrink-0" />
+                      )
+                    ) : (
+                      <span>
+                        ({sec.questionCountBn}) • পৃ. {sec.startPage}–{sec.endPage}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -951,7 +1105,7 @@ function ReaderInner() {
             className="editorial-book-content"
             style={{ fontSize: `${fontSize}px` }}
           >
-            {unlockedPages.map((p) => (
+            {visibleUnlockedPages.map((p) => (
               <section
                 key={p.pageNumber}
                 id={`reader-page-${p.pageNumber}`}
@@ -970,8 +1124,19 @@ function ReaderInner() {
               </section>
             ))}
 
+            {/* Progressive Scroll Loading Sentinel */}
+            {hasMoreUnlockedPages && (
+              <div
+                ref={sentinelRef}
+                className="py-8 flex items-center justify-center gap-2 text-xs opacity-50 select-none"
+              >
+                <div className="animate-spin w-4 h-4 border-2 border-current border-t-transparent rounded-full" />
+                <span>পরবর্তী পৃষ্ঠা লোড হচ্ছে...</span>
+              </div>
+            )}
+
             {/* Locked Pages Blur + Unlock Prompt */}
-            {lockedPages.length > 0 && (
+            {!hasMoreUnlockedPages && lockedPages.length > 0 && (
               <div className="mt-6 relative">
                 <div className="select-none pointer-events-none blur-[4px] opacity-40 space-y-3 mb-5 text-sm">
                   <p>
@@ -982,33 +1147,64 @@ function ReaderInner() {
                   </p>
                 </div>
 
-                <UnlockCard
-                  defaultSubjectId={currentChapter.id}
-                  title={`বই ${currentChapter.bookNumber}-এর পৃষ্ঠা ${lockedPages[0].pageNumber}–${currentChapter.endPage} আনলক করুন`}
-                />
+                {/* Sleek Locked Notice + Unlock Page Link */}
+                <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md p-6 sm:p-8 text-center space-y-4 shadow-xl max-w-md mx-auto">
+                  <div className="w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-600 dark:text-amber-400 mx-auto flex items-center justify-center">
+                    <Lock size={22} />
+                  </div>
+                  <div>
+                    <h3 className="text-base sm:text-lg font-bold text-[#141413] dark:text-white">
+                      বই {currentChapter.bookNumber}-এর বাকি {lockedPages.length}টি পৃষ্ঠা লক করা
+                    </h3>
+                    <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm mx-auto leading-relaxed">
+                      {!isLoggedIn
+                        ? "বইটি পড়তে এবং আনলক কোড ব্যবহার করতে প্রথমে আপনার অ্যাকাউন্টে লগইন করুন।"
+                        : `${currentChapter.titleBn}-এর সম্পূর্ণ প্রশ্ন ও উত্তর পড়তে এবং আনলক কোড এন্টার করতে বিস্তারিত আনলক পেজে যান।`}
+                    </p>
+                  </div>
+                  <div>
+                    <Link
+                      href={
+                        !isLoggedIn
+                          ? `/login?redirect=${encodeURIComponent(`/unlock?ch=${chapterIndex}`)}`
+                          : `/unlock?ch=${chapterIndex}`
+                      }
+                      className="inline-flex items-center gap-2 px-6 py-2.5 rounded-full bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-xs sm:text-sm shadow-md transition active:scale-95 cursor-pointer"
+                    >
+                      <Key size={14} />
+                      <span>
+                        {!isLoggedIn
+                          ? "লগইন করে আনলক করুন →"
+                          : "বই আনলক করুন (বিস্তারিত পেজ) →"}
+                      </span>
+                    </Link>
+                  </div>
+                </div>
               </div>
             )}
 
             {/* Book Prev / Next Footer */}
-            <div className="mt-12 pt-6 border-t border-current/10 flex items-center justify-between text-xs sm:text-sm">
-              <button
-                onClick={() => goToChapter(chapterIndex - 1)}
-                disabled={chapterIndex <= 0}
-                className="flex items-center gap-1 font-medium opacity-75 disabled:opacity-20 py-2 cursor-pointer"
-              >
-                <ChevronLeft size={17} /> আগের বই
-              </button>
-              <span className="text-xs opacity-40 font-mono">
-                বই {currentChapter.bookNumber}/{CHAPTERS.length}
-              </span>
-              <button
-                onClick={() => goToChapter(chapterIndex + 1)}
-                disabled={chapterIndex >= CHAPTERS.length - 1}
-                className="flex items-center gap-1 font-medium opacity-75 disabled:opacity-20 py-2 cursor-pointer"
-              >
-                পরের বই <ChevronRight size={17} />
-              </button>
-            </div>
+            {!hasMoreUnlockedPages && (
+              <div className="mt-12 pt-6 border-t border-current/10 flex items-center justify-between text-xs sm:text-sm">
+                <button
+                  onClick={() => goToChapter(chapterIndex - 1)}
+                  disabled={chapterIndex <= 0}
+                  className="flex items-center gap-1 font-medium opacity-75 disabled:opacity-20 py-2 cursor-pointer"
+                >
+                  <ChevronLeft size={17} /> আগের বই
+                </button>
+                <span className="text-xs opacity-40 font-mono">
+                  বই {currentChapter.bookNumber}/{CHAPTERS.length}
+                </span>
+                <button
+                  onClick={() => goToChapter(chapterIndex + 1)}
+                  disabled={chapterIndex >= CHAPTERS.length - 1}
+                  className="flex items-center gap-1 font-medium opacity-75 disabled:opacity-20 py-2 cursor-pointer"
+                >
+                  পরের বই <ChevronRight size={17} />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -1150,7 +1346,13 @@ function ReaderInner() {
       )}
 
       {/* Mobile-Fitted iOS Floating Bottom Pill Dock */}
-      <div className="fixed bottom-4 sm:bottom-5 app-bottom-dock inset-x-0 z-40 flex items-center justify-center px-2 pointer-events-none">
+      <div
+        className={`fixed bottom-4 sm:bottom-5 app-bottom-dock inset-x-0 z-40 flex items-center justify-center px-2 pointer-events-none transition-all duration-300 ease-in-out ${
+          isHeaderVisible
+            ? "translate-y-0 opacity-100"
+            : "translate-y-24 opacity-0"
+        }`}
+      >
         <div className="flex items-center gap-1 sm:gap-2 max-w-full pointer-events-auto">
           {/* Home Circle Button */}
           <button
@@ -1339,12 +1541,12 @@ function ReaderInner() {
                     { id: "ka", label: "ক-বিভাগ", locked: false },
                     {
                       id: "kha",
-                      label: !currentBookUnlocked ? "খ-বিভাগ 🔒" : "খ-বিভাগ",
+                      label: "খ-বিভাগ",
                       locked: !currentBookUnlocked,
                     },
                     {
                       id: "ga",
-                      label: !currentBookUnlocked ? "গ-বিভাগ 🔒" : "গ-বিভাগ",
+                      label: "গ-বিভাগ",
                       locked: !currentBookUnlocked,
                     },
                   ].map((tab) => (
@@ -1353,13 +1555,14 @@ function ReaderInner() {
                       onClick={() =>
                         setTocTab(tab.id as "all" | "ka" | "kha" | "ga")
                       }
-                      className={`py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer ${
+                      className={`py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer flex items-center justify-center gap-1 ${
                         tocTab === tab.id
                           ? "bg-[#141413] text-white shadow-xs"
                           : "text-[#141413]/70 hover:text-[#141413]"
                       }`}
                     >
-                      {tab.label}
+                      <span>{tab.label}</span>
+                      {tab.locked && <Lock size={11} className="opacity-70 shrink-0" />}
                     </button>
                   ))}
                 </div>
@@ -1464,7 +1667,7 @@ function ReaderInner() {
                             type="button"
                             onClick={() => {
                               setShowTocSheet(false);
-                              setShowUnlockModal(true);
+                              navigateToUnlockOrLogin(chapterIndex);
                             }}
                             className="w-full text-left rounded-2xl border border-black/10 bg-white/80 hover:bg-white px-3.5 py-3 flex items-center justify-between gap-2 transition cursor-pointer"
                           >
@@ -1481,8 +1684,8 @@ function ReaderInner() {
                                 </span>
                               </div>
                             </div>
-                            <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-1 rounded-full shrink-0">
-                              🔒 পেইড
+                            <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-1 rounded-full shrink-0 flex items-center gap-1">
+                              <Lock size={10} /> লকড
                             </span>
                           </button>
                         )}
@@ -1498,8 +1701,8 @@ function ReaderInner() {
                           খ-বিভাগ • সংক্ষিপ্ত প্রশ্ন
                         </span>
                         {!currentBookUnlocked ? (
-                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full">
-                            🔒 পেইড (Paid)
+                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                            <Lock size={10} /> লকড
                           </span>
                         ) : (
                           <span className="text-[10px] opacity-50">
@@ -1544,9 +1747,9 @@ function ReaderInner() {
                             type="button"
                             onClick={() => {
                               setShowTocSheet(false);
-                              setShowUnlockModal(true);
+                              navigateToUnlockOrLogin(chapterIndex);
                             }}
-                            className="shrink-0 bg-[#141413] text-white text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer hover:opacity-90 transition"
+                            className="shrink-0 bg-amber-400 text-amber-950 hover:bg-amber-300 text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer transition shadow-xs"
                           >
                             আনলক করুন
                           </button>
@@ -1563,8 +1766,8 @@ function ReaderInner() {
                           গ-বিভাগ • রচনামূলক প্রশ্ন
                         </span>
                         {!currentBookUnlocked ? (
-                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full">
-                            🔒 পেইড (Paid)
+                          <span className="text-[10px] font-extrabold bg-[#141413] text-white px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                            <Lock size={10} /> লকড
                           </span>
                         ) : (
                           <span className="text-[10px] opacity-50">
@@ -1609,9 +1812,9 @@ function ReaderInner() {
                             type="button"
                             onClick={() => {
                               setShowTocSheet(false);
-                              setShowUnlockModal(true);
+                              navigateToUnlockOrLogin(chapterIndex);
                             }}
-                            className="shrink-0 bg-[#141413] text-white text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer hover:opacity-90 transition"
+                            className="shrink-0 bg-amber-400 text-amber-950 hover:bg-amber-300 text-[11px] font-bold px-3.5 py-2 rounded-full cursor-pointer transition shadow-xs"
                           >
                             আনলক করুন
                           </button>
@@ -1628,7 +1831,7 @@ function ReaderInner() {
                 onClick={async () => {
                   setShowTocSheet(false);
                   if (!currentBookUnlocked) {
-                    setShowUnlockModal(true);
+                    navigateToUnlockOrLogin(chapterIndex);
                   } else {
                     await handleToggleOfflineSave();
                   }
@@ -1715,6 +1918,65 @@ function ReaderInner() {
       {bookmarkToast && (
         <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-[#111111] text-white px-4 py-2 rounded-full shadow-xl flex items-center gap-1.5 text-xs font-medium">
           <Check size={14} /> পৃষ্ঠা {activePageNum} বুকমার্ক সেভ করা হয়েছে
+        </div>
+      )}
+
+      {/* Dynamic Offline Download Progress Animation */}
+      <OfflineDownloadModal
+        isOpen={showOfflineDownloadAnim}
+        bookNumber={currentChapter.bookNumber}
+        bookTitle={currentChapter.titleBn}
+        totalPages={currentChapter.endPage - currentChapter.startPage + 1}
+        onComplete={() => {
+          setShowOfflineDownloadAnim(false);
+          if (offlinePendingMsg) {
+            setOfflineToastMsg(offlinePendingMsg);
+            setOfflinePendingMsg(null);
+            setTimeout(() => setOfflineToastMsg(null), 4000);
+          }
+        }}
+      />
+
+      {/* Offline Book Delete Confirmation Modal */}
+      {showDeleteConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div
+            className="w-full max-w-sm bg-white dark:bg-[#1C1C1E] text-[#141413] dark:text-white rounded-3xl p-6 shadow-2xl border border-black/10 dark:border-white/10 text-center space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-2xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 mx-auto flex items-center justify-center">
+              <Trash2 size={22} />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="text-base font-bold text-[#141413] dark:text-white">
+                অফলাইন বই মুছে ফেলতে চান?
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed max-w-xs mx-auto">
+                আপনি কি <span className="font-bold text-[#141413] dark:text-white">বই {currentChapter.bookNumber}</span> ({currentChapter.titleBn})-এর সংরক্ষিত অফলাইন ডেটা মুছে ফেলতে চান?
+              </p>
+              <p className="text-[11px] text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 rounded-xl p-2.5 mt-2">
+                পরবর্তীতে ইন্টারনেট ছাড়া সরাসরি পড়তে চাইলে বইটি আবার অফলাইনে সেভ করতে হবে।
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirmModal(false)}
+                className="flex-1 py-2.5 rounded-full border border-gray-300 dark:border-zinc-700 text-xs font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-zinc-800 transition cursor-pointer"
+              >
+                বাতিল
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteOffline}
+                className="flex-1 py-2.5 rounded-full bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md transition cursor-pointer"
+              >
+                মুছে ফেলুন
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

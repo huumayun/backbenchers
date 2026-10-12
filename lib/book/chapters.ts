@@ -34,7 +34,7 @@ export interface Chapter {
 }
 
 export const FREE_PAGE_LIMIT = 1;
-export const TOTAL_BOOK_PAGES = 155;
+export const TOTAL_BOOK_PAGES = 177;
 
 export const CHAPTERS: Chapter[] = [
   {
@@ -45,7 +45,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Gymnosperm, Palaeobotany & Palynology",
     titleBn: "জিম্নোস্পার্ম, প্যালিওবোটানি ও প্যালিনোলজি",
     startPage: 1,
-    endPage: 28,
+    endPage: 23,
     freePagesUpTo: 1,
     questionCounts: {
       ka: 50,
@@ -60,7 +60,7 @@ export const CHAPTERS: Chapter[] = [
     sections: [
       { id: "sec-ka-233001", label: "ক-বিভাগ (অতি সংক্ষিপ্ত)", badgeClass: "ka", startPage: 1, endPage: 2, questionCount: 50, questionCountBn: "৫০টি" },
       { id: "sec-kha-233001", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 8, questionCount: 15, questionCountBn: "১৫টি" },
-      { id: "sec-ga-233001", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 9, endPage: 28, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-ga-233001", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 9, endPage: 23, questionCount: 15, questionCountBn: "১৫টি" },
     ],
   },
   {
@@ -71,7 +71,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Plant Physiology & Plant Nutrition",
     titleBn: "উদ্ভিদ শারীরবিদ্যা ও উদ্ভিদ পুষ্টি",
     startPage: 1,
-    endPage: 15,
+    endPage: 24,
     freePagesUpTo: 1,
     questionCounts: {
       ka: 50,
@@ -85,8 +85,8 @@ export const CHAPTERS: Chapter[] = [
     },
     sections: [
       { id: "sec-ka-233003", label: "ক-বিভাগ (অতি সংক্ষিপ্ত)", badgeClass: "ka", startPage: 1, endPage: 2, questionCount: 50, questionCountBn: "৫০টি" },
-      { id: "sec-kha-233003", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 6, questionCount: 16, questionCountBn: "১৬টি" },
-      { id: "sec-ga-233003", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 7, endPage: 15, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-kha-233003", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 9, questionCount: 16, questionCountBn: "১৬টি" },
+      { id: "sec-ga-233003", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 10, endPage: 24, questionCount: 15, questionCountBn: "১৫টি" },
     ],
   },
   {
@@ -111,8 +111,8 @@ export const CHAPTERS: Chapter[] = [
     },
     sections: [
       { id: "sec-ka-233005", label: "ক-বিভাগ (অতি সংক্ষিপ্ত)", badgeClass: "ka", startPage: 1, endPage: 2, questionCount: 50, questionCountBn: "৫০টি" },
-      { id: "sec-kha-233005", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 7, questionCount: 15, questionCountBn: "১৫টি" },
-      { id: "sec-ga-233005", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 8, endPage: 29, questionCount: 21, questionCountBn: "২১টি" },
+      { id: "sec-kha-233005", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 8, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-ga-233005", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 9, endPage: 29, questionCount: 21, questionCountBn: "২১টি" },
     ],
   },
   {
@@ -123,7 +123,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Ecology & Environmental Science",
     titleBn: "বাস্তুবিদ্যা ও পরিবেশবিজ্ঞান",
     startPage: 1,
-    endPage: 11,
+    endPage: 32,
     freePagesUpTo: 1,
     questionCounts: {
       ka: 51,
@@ -137,8 +137,8 @@ export const CHAPTERS: Chapter[] = [
     },
     sections: [
       { id: "sec-ka-233007", label: "ক-বিভাগ (অতি সংক্ষিপ্ত)", badgeClass: "ka", startPage: 1, endPage: 2, questionCount: 51, questionCountBn: "৫১টি" },
-      { id: "sec-kha-233007", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 5, questionCount: 17, questionCountBn: "১৭টি" },
-      { id: "sec-ga-233007", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 6, endPage: 11, questionCount: 23, questionCountBn: "২৩টি" },
+      { id: "sec-kha-233007", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 9, questionCount: 17, questionCountBn: "১৭টি" },
+      { id: "sec-ga-233007", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 10, endPage: 32, questionCount: 23, questionCountBn: "২৩টি" },
     ],
   },
   {
@@ -163,8 +163,8 @@ export const CHAPTERS: Chapter[] = [
     },
     sections: [
       { id: "sec-ka-233009", label: "ক-বিভাগ (অতি সংক্ষিপ্ত)", badgeClass: "ka", startPage: 1, endPage: 2, questionCount: 50, questionCountBn: "৫০টি" },
-      { id: "sec-kha-233009", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 7, questionCount: 15, questionCountBn: "১৫টি" },
-      { id: "sec-ga-233009", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 8, endPage: 23, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-kha-233009", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 8, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-ga-233009", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 9, endPage: 23, questionCount: 15, questionCountBn: "১৫টি" },
     ],
   },
   {
@@ -175,7 +175,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Cytology & Cytogenetics",
     titleBn: "সাইটোলজি ও সাইটোজেনেটিক্স",
     startPage: 1,
-    endPage: 25,
+    endPage: 23,
     freePagesUpTo: 1,
     questionCounts: {
       ka: 50,
@@ -189,8 +189,8 @@ export const CHAPTERS: Chapter[] = [
     },
     sections: [
       { id: "sec-ka-233011", label: "ক-বিভাগ (অতি সংক্ষিপ্ত)", badgeClass: "ka", startPage: 1, endPage: 2, questionCount: 50, questionCountBn: "৫০টি" },
-      { id: "sec-kha-233011", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 7, questionCount: 15, questionCountBn: "১৫টি" },
-      { id: "sec-ga-233011", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 8, endPage: 25, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-kha-233011", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 8, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-ga-233011", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 9, endPage: 23, questionCount: 15, questionCountBn: "১৫টি" },
     ],
   },
   {
@@ -201,7 +201,7 @@ export const CHAPTERS: Chapter[] = [
     title: "Genetics",
     titleBn: "বংশগতিবিদ্যা",
     startPage: 1,
-    endPage: 24,
+    endPage: 23,
     freePagesUpTo: 1,
     questionCounts: {
       ka: 50,
@@ -215,8 +215,8 @@ export const CHAPTERS: Chapter[] = [
     },
     sections: [
       { id: "sec-ka-233013", label: "ক-বিভাগ (অতি সংক্ষিপ্ত)", badgeClass: "ka", startPage: 1, endPage: 2, questionCount: 50, questionCountBn: "৫০টি" },
-      { id: "sec-kha-233013", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 10, questionCount: 14, questionCountBn: "১৪টি" },
-      { id: "sec-ga-233013", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 11, endPage: 24, questionCount: 15, questionCountBn: "১৫টি" },
+      { id: "sec-kha-233013", label: "খ-বিভাগ (সংক্ষিপ্ত)", badgeClass: "kha", startPage: 3, endPage: 8, questionCount: 14, questionCountBn: "১৪টি" },
+      { id: "sec-ga-233013", label: "গ-বিভাগ (রচনামূলক)", badgeClass: "ga", startPage: 9, endPage: 23, questionCount: 15, questionCountBn: "১৫টি" },
     ],
   },
 ];

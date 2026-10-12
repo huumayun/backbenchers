@@ -106,7 +106,11 @@ export function UnlockCard({
       })`
   );
 
-  const totalCost = selectedToBuy.length * 49;
+  const isOffer = settings.isOfferActive !== false;
+  const regularPrice = settings.regularPrice || 49;
+  const offerPrice = settings.offerPrice || 39;
+  const unitPrice = isOffer ? offerPrice : regularPrice;
+  const totalCost = selectedToBuy.length * unitPrice;
 
   const buildTelegramPurchaseUrl = () => {
     const base = settings.contactTelegram || "https://t.me/your_telegram_username";
@@ -115,8 +119,11 @@ export function UnlockCard({
       selectedBookNames.length > 0
         ? selectedBookNames.join("\n• ")
         : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
-    const msg = `আসসালামু আলাইকুম, আমি নিচের বিষয়গুলোর আনলক কোড নিতে চাই (প্রতি বিষয় ৳৪৯):\n• ${subjectListText}\nমোট: ৳${
-      totalCost || 49
+    const priceText = isOffer
+      ? `প্রতি বিষয় ৳${offerPrice} (অফার, পূর্বে ৳${regularPrice})`
+      : `প্রতি বিষয় ৳${regularPrice}`;
+    const msg = `আসসালামু আলাইকুম, আমি নিচের বিষয়গুলোর আনলক কোড নিতে চাই (${priceText}):\n• ${subjectListText}\nমোট: ৳${
+      totalCost || unitPrice
     }\nআমার অ্যাকাউন্ট ইমেইল: ${userLabel}`;
 
     if (base.includes("t.me/")) {
@@ -124,6 +131,26 @@ export function UnlockCard({
       return `${base}${separator}text=${encodeURIComponent(msg)}`;
     }
     return base;
+  };
+
+  const buildWhatsAppPurchaseUrl = () => {
+    const num = (
+      settings.contactWhatsApp ||
+      settings.whatsappNumber ||
+      "01700000000"
+    ).replace(/[^0-9]/g, "");
+    const userLabel = profile?.email || user?.email || "";
+    const subjectListText =
+      selectedBookNames.length > 0
+        ? selectedBookNames.join("\n• ")
+        : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
+    const priceText = isOffer
+      ? `প্রতি বিষয় ৳${offerPrice} (অফার, পূর্বে ৳${regularPrice})`
+      : `প্রতি বিষয় ৳${regularPrice}`;
+    const msg = `আসসালামু আলাইকুম, আমি নিচের বিষয়গুলোর আনলক কোড নিতে চাই (${priceText}):\n• ${subjectListText}\nমোট: ৳${
+      totalCost || unitPrice
+    }\nআমার অ্যাকাউন্ট ইমেইল: ${userLabel}`;
+    return `https://wa.me/${num}?text=${encodeURIComponent(msg)}`;
   };
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -435,7 +462,14 @@ export function UnlockCard({
                               isSelected ? "text-[#141413]" : "opacity-50"
                             }
                           >
-                            ৳৪৯
+                            {isOffer ? (
+                              <span>
+                                <span className="line-through text-gray-400 mr-0.5">৳{regularPrice}</span>
+                                <span className="text-emerald-700 font-bold">৳{offerPrice}</span>
+                              </span>
+                            ) : (
+                              `৳${regularPrice}`
+                            )}
                           </span>
                         )}
                       </span>
@@ -444,8 +478,8 @@ export function UnlockCard({
                 })}
               </div>
 
-              {/* Integrated Summary + Telegram Button */}
-              <div className="pt-2.5 border-t border-black/6 flex items-center justify-between gap-2">
+              {/* Integrated Summary + Dynamic Contact Button(s) */}
+              <div className="pt-2.5 border-t border-black/6 flex items-center justify-between gap-2 flex-wrap">
                 <div className="text-xs">
                   <span className="opacity-60">সিলেক্টেড: </span>
                   <span className="font-bold">{selectedToBuy.length}টি</span>
@@ -455,15 +489,34 @@ export function UnlockCard({
                   </span>
                 </div>
 
-                <a
-                  href={buildTelegramPurchaseUrl()}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="bg-[#141413] hover:opacity-90 text-white font-bold py-2 px-3.5 rounded-full flex items-center gap-1.5 text-[11px] transition shrink-0"
-                >
-                  <MessageCircle size={13} />
-                  <span>Telegram-এ কোড নিন</span>
-                </a>
+                <div className="flex items-center gap-1.5">
+                  {(settings.contactChannel === "telegram" ||
+                    settings.contactChannel === "both" ||
+                    !settings.contactChannel) && (
+                    <a
+                      href={buildTelegramPurchaseUrl()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="bg-[#229ED9] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0"
+                    >
+                      <MessageCircle size={12} />
+                      <span>Telegram</span>
+                    </a>
+                  )}
+
+                  {(settings.contactChannel === "whatsapp" ||
+                    settings.contactChannel === "both") && (
+                    <a
+                      href={buildWhatsAppPurchaseUrl()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="bg-[#25D366] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0"
+                    >
+                      <MessageCircle size={12} />
+                      <span>WhatsApp</span>
+                    </a>
+                  )}
+                </div>
               </div>
             </div>
           )}

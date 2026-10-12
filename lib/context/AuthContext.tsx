@@ -35,10 +35,17 @@ export interface UserProfile {
   unlockedSubjects?: string[];
   role: "reader" | "admin";
   unlockCode?: string | null;
+  subjectAccess?: Record<string, { unlockCode?: string; unlockDate?: string }>;
+  redeemedCodes?: string[];
 }
 
 export interface SiteSettingsClient {
   price: string;
+  regularPrice?: number;
+  offerPrice?: number;
+  isOfferActive?: boolean;
+  contactChannel?: "telegram" | "whatsapp" | "both";
+  pricePerSubject?: number;
   paymentMethods: string;
   whatsappNumber: string;
   contactWhatsApp: string;
@@ -121,6 +128,10 @@ interface AuthContextType {
 
 const DEFAULT_SETTINGS: SiteSettingsClient = {
   price: "৳৪৯ (প্রতি বিষয়)",
+  regularPrice: 49,
+  offerPrice: 39,
+  isOfferActive: false,
+  contactChannel: "both",
   paymentMethods: BOOK_INFO.paymentMethods,
   whatsappNumber: BOOK_INFO.whatsappNumber,
   contactWhatsApp: BOOK_INFO.contactWhatsApp,
@@ -128,7 +139,7 @@ const DEFAULT_SETTINGS: SiteSettingsClient = {
   contactTelegram: BOOK_INFO.contactTelegram,
   freePagesLimit: BOOK_INFO.freePagesLimit,
   announcement:
-    "প্রতি বিষয় মাত্র ৳৪৯! আপনার পছন্দের বিষয়গুলো সিলেক্ট করে টেলিগ্রামে মেসেজ পাঠিয়ে আনলক কোড নিন।",
+    "আপনার পছন্দের বিষয় সিলেক্ট করে মেসেজ পাঠিয়ে আনলক কোড সংগ্রহ করুন।",
 };
 
 const AuthContext = createContext<AuthContextType>({

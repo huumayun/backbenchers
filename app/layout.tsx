@@ -16,6 +16,8 @@ export const metadata: Metadata = {
   },
 };
 
+import { CapacitorBackButtonHandler } from "@/components/CapacitorBackButtonHandler";
+
 export default function RootLayout({
   children,
 }: {
@@ -29,8 +31,9 @@ export default function RootLayout({
           content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
         />
         <meta name="theme-color" content="#FAF9F6" />
+        <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-Title" content="Backbencher" />
+        <meta name="apple-mobile-web-app-title" content="Backbencher" />
         <link rel="icon" href="/icon.png" />
         <link rel="apple-touch-icon" href="/icon.png" />
         <link
@@ -39,7 +42,10 @@ export default function RootLayout({
         />
       </head>
       <body className="font-hind antialiased bg-[#FAF9F6]">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <CapacitorBackButtonHandler />
+          {children}
+        </AuthProvider>
       </body>
     </html>
   );

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useAuth } from "@/lib/context/AuthContext";
 import { logoutUser } from "@/lib/firebase/auth";
 import { BOOK_INFO } from "@/lib/book/chapters";
-import UnlockModal from "@/components/ui/UnlockModal";
 import {
   BookOpen,
   LogIn,
@@ -26,7 +25,7 @@ export default function Navbar() {
     user,
     profile,
     hasAccess,
-    setShowUnlockModal,
+    isLoggedIn,
     deviceId,
     accessToken,
   } = useAuth();
@@ -40,9 +39,17 @@ export default function Navbar() {
     router.push("/");
   };
 
+  const handleUnlockClick = () => {
+    if (isLoggedIn) {
+      router.push("/unlock");
+    } else {
+      router.push(`/login?redirect=${encodeURIComponent("/unlock")}`);
+    }
+  };
+
   const handleDownloadClick = () => {
     if (!hasAccess) {
-      setShowUnlockModal(true);
+      handleUnlockClick();
       return;
     }
     const url = `/api/download-pdf?deviceId=${encodeURIComponent(
@@ -118,7 +125,7 @@ export default function Navbar() {
               </span>
             ) : (
               <button
-                onClick={() => setShowUnlockModal(true)}
+                onClick={handleUnlockClick}
                 className="bg-[#d4af37] hover:bg-yellow-400 text-[#00332c] font-extrabold px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow cursor-pointer"
               >
                 <Key size={14} /> কোড দিন / আনলক
@@ -130,10 +137,17 @@ export default function Navbar() {
             {user ? (
               <div className="flex items-center gap-2">
                 <Link
-                  href="/dashboard"
-                  className="text-xs text-emerald-100 hover:text-white flex items-center gap-1 max-w-[110px] truncate"
+                  href="/profile"
+                  className="text-xs text-emerald-100 hover:text-white flex items-center gap-1.5 max-w-[130px] truncate"
                 >
-                  <User size={14} /> {profile?.displayName || "পাঠক"}
+                  <div className="w-5 h-5 rounded-full overflow-hidden shrink-0 border border-white/60 bg-white">
+                    <img
+                      src="/avatar.png"
+                      alt="Avatar"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                  <span className="truncate">{profile?.displayName || "পাঠক"}</span>
                 </Link>
                 <button
                   onClick={handleLogout}
@@ -164,8 +178,8 @@ export default function Navbar() {
           <div className="flex md:hidden items-center gap-2">
             {!hasAccess && (
               <button
-                onClick={() => setShowUnlockModal(true)}
-                className="bg-[#d4af37] text-[#00332c] text-xs font-extrabold px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow"
+                onClick={handleUnlockClick}
+                className="bg-[#d4af37] text-[#00332c] text-xs font-extrabold px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow cursor-pointer"
               >
                 <Key size={12} /> আনলক
               </button>
@@ -207,11 +221,11 @@ export default function Navbar() {
               <Download size={16} className="text-[#d4af37]" /> সম্পূর্ণ PDF ডাউনলোড
             </button>
             <Link
-              href="/dashboard"
+              href="/profile"
               onClick={() => setMenuOpen(false)}
               className="py-1.5 px-2 rounded-lg hover:bg-white/10 flex items-center gap-2 font-semibold"
             >
-              <BookMarked size={16} /> পাঠকের ড্যাশবোর্ড ও বুকমার্ক
+              <BookMarked size={16} /> পাঠকের প্রোফাইল ও বুকমার্ক
             </Link>
             <Link
               href="/admin"
@@ -223,9 +237,18 @@ export default function Navbar() {
             <div className="border-t border-emerald-800 pt-2 flex items-center justify-between">
               {user ? (
                 <>
-                  <span className="text-xs text-emerald-200">
-                    👤 {profile?.displayName || user.email}
-                  </span>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="w-5 h-5 rounded-full overflow-hidden shrink-0 border border-white/60 bg-white">
+                      <img
+                        src="/avatar.png"
+                        alt="Avatar"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <span className="text-xs text-emerald-200 truncate max-w-[140px]">
+                      {profile?.displayName || user.email}
+                    </span>
+                  </div>
                   <button
                     onClick={handleLogout}
                     className="text-xs bg-red-600 px-3 py-1 rounded-lg font-bold"
@@ -255,7 +278,6 @@ export default function Navbar() {
           </div>
         )}
       </nav>
-      <UnlockModal />
     </>
   );
 }
