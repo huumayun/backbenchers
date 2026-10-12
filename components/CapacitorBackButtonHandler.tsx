@@ -4,6 +4,33 @@ import { useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { isCapacitorNativeApp } from "@/lib/capacitor/localApiBridge";
 
+export function syncAndroidSystemBars(hexColor: string, isDarkTheme: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    const metaTheme = document.querySelector<HTMLMetaElement>(
+      'meta[name="theme-color"]'
+    );
+    if (metaTheme) {
+      metaTheme.setAttribute("content", hexColor);
+    }
+    document.documentElement.style.backgroundColor = hexColor;
+    if (document.body) {
+      document.body.style.backgroundColor = hexColor;
+    }
+
+    const win = window as unknown as {
+      AndroidNative?: {
+        setSystemBarTheme?: (hex: string, isDark: boolean) => void;
+      };
+    };
+    if (win.AndroidNative && typeof win.AndroidNative.setSystemBarTheme === "function") {
+      win.AndroidNative.setSystemBarTheme(hexColor, isDarkTheme);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export function CapacitorBackButtonHandler() {
   const router = useRouter();
   const pathname = usePathname();
@@ -12,6 +39,10 @@ export function CapacitorBackButtonHandler() {
 
   useEffect(() => {
     pathnameRef.current = pathname;
+    const cleanPath = (pathname || "").replace(/\/+$/, "") || "/";
+    if (cleanPath !== "/read" && cleanPath !== "/flipbook") {
+      syncAndroidSystemBars("#FAF9F6", false);
+    }
   }, [pathname]);
 
   useEffect(() => {

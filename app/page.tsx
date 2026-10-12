@@ -181,10 +181,9 @@ export default function HomePage() {
             <span>অ্যাপ ডাউনলোড (v2.0 .APK)</span>
           </a>
         ) : (
-          <div className="flex items-center gap-1.5 text-[11px] font-bold font-mono opacity-60">
-            <ShieldCheck size={13} className="text-emerald-700" />
-            <span>Backbencher App v2.0</span>
-          </div>
+          <span className="text-sm sm:text-base font-black tracking-tight text-[#141413]">
+            Backbencher
+          </span>
         )}
 
         <div className="flex items-center gap-2">

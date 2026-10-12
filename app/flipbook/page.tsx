@@ -12,6 +12,7 @@ import {
   isDeviceOnline,
 } from "@/lib/offline/offlineStore";
 import OfflineDownloadModal from "@/components/OfflineDownloadModal";
+import { syncAndroidSystemBars } from "@/components/CapacitorBackButtonHandler";
 import { recordReadingHeartbeat } from "@/lib/readingStats";
 import {
   ChevronLeft,
@@ -554,9 +555,25 @@ function FlipbookInner() {
     }
   };
 
+  // Sync Android native status bar & navigation bar with Flipbook theme
+  useEffect(() => {
+    const barColor =
+      theme === "dark" ? "#0E0E0D" : theme === "sepia" ? "#EAE0C8" : "#EFECE6";
+    syncAndroidSystemBars(barColor, theme === "dark");
+  }, [theme]);
+
+  useEffect(() => {
+    return () => {
+      syncAndroidSystemBars("#FAF9F6", false);
+    };
+  }, []);
+
   const cycleTheme = () => {
     setTheme((prev) => {
       const next = prev === "light" ? "sepia" : prev === "sepia" ? "dark" : "light";
+      const nextColor =
+        next === "dark" ? "#0E0E0D" : next === "sepia" ? "#EAE0C8" : "#EFECE6";
+      syncAndroidSystemBars(nextColor, next === "dark");
       if (typeof window !== "undefined") {
         localStorage.setItem("ebook_reader_theme", next);
       }

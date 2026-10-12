@@ -11,6 +11,7 @@ import {
   isDeviceOnline,
 } from "@/lib/offline/offlineStore";
 import OfflineDownloadModal from "@/components/OfflineDownloadModal";
+import { syncAndroidSystemBars } from "@/components/CapacitorBackButtonHandler";
 import { recordReadingHeartbeat } from "@/lib/readingStats";
 import {
   ChevronLeft,
@@ -753,10 +754,26 @@ function ReaderInner() {
     goToChapter(bm.chapterIndex, bm.pageNumber, bm.pageOffset || 0);
   };
 
+  // Sync Android native status bar & navigation bar with Reader theme
+  useEffect(() => {
+    const barColor =
+      theme === "dark" ? "#141413" : theme === "sepia" ? "#F4ECD8" : "#FAF9F6";
+    syncAndroidSystemBars(barColor, theme === "dark");
+  }, [theme]);
+
+  useEffect(() => {
+    return () => {
+      syncAndroidSystemBars("#FAF9F6", false);
+    };
+  }, []);
+
   const cycleTheme = () => {
     setTheme((prev) => {
       const next =
         prev === "light" ? "sepia" : prev === "sepia" ? "dark" : "light";
+      const nextColor =
+        next === "dark" ? "#141413" : next === "sepia" ? "#F4ECD8" : "#FAF9F6";
+      syncAndroidSystemBars(nextColor, next === "dark");
       try {
         localStorage.setItem("ebook_reader_theme", next);
       } catch {

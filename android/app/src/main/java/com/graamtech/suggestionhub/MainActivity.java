@@ -5,6 +5,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -18,40 +20,19 @@ import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
 
 public class MainActivity extends BridgeActivity {
+    private int currentBarColor = Color.parseColor("#FAF9F6");
+    private boolean currentLightBars = true; // true = dark clock/icons on light background
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        Window window = getWindow();
-        int editorialBg = Color.parseColor("#FAF9F6");
-
-        // Seamless borderless status bar & navigation bar matching app background (#FAF9F6)
-        window.setStatusBarColor(editorialBg);
-        window.setNavigationBarColor(editorialBg);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            window.setNavigationBarDividerColor(Color.TRANSPARENT);
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            window.setStatusBarContrastEnforced(false);
-            window.setNavigationBarContrastEnforced(false);
-        }
-
-        View decorView = window.getDecorView();
-        decorView.setBackgroundColor(editorialBg);
-
-        WindowInsetsControllerCompat controller =
-            WindowCompat.getInsetsController(window, decorView);
-        if (controller != null) {
-            controller.setAppearanceLightStatusBars(true);
-            controller.setAppearanceLightNavigationBars(true);
-        }
 
         // Automatically adjust for both 3-Button Navigation and Gesture Navigation
         // so no app button ever goes underneath the Android navigation buttons,
         // and no divider line appears under the status bar.
         View contentView = findViewById(android.R.id.content);
         if (contentView != null) {
-            contentView.setBackgroundColor(editorialBg);
+            contentView.setBackgroundColor(currentBarColor);
             ViewCompat.setOnApplyWindowInsetsListener(contentView, (v, windowInsets) -> {
                 Insets bars = windowInsets.getInsets(
                     WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
@@ -59,6 +40,12 @@ public class MainActivity extends BridgeActivity {
                 v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
                 return WindowInsetsCompat.CONSUMED;
             });
+        }
+
+        applySystemBarAppearance(currentBarColor, currentLightBars);
+        if (contentView != null) {
+            contentView.postDelayed(() -> applySystemBarAppearance(currentBarColor, currentLightBars), 150);
+            contentView.postDelayed(() -> applySystemBarAppearance(currentBarColor, currentLightBars), 500);
         }
 
         // Seamlessly launch WhatsApp, WhatsApp Business, Telegram and system intent URLs
@@ -84,11 +71,27 @@ public class MainActivity extends BridgeActivity {
             });
 
             if (bridge.getWebView() != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    bridge.getWebView().setForceDarkAllowed(false);
+                }
                 bridge.getWebView().addJavascriptInterface(new Object() {
                     @android.webkit.JavascriptInterface
                     public void openExternal(final String url) {
                         if (url == null || url.trim().isEmpty()) return;
                         runOnUiThread(() -> handleExternalUrl(Uri.parse(url.trim())));
+                    }
+
+                    @android.webkit.JavascriptInterface
+                    public void setSystemBarTheme(final String hexColor, final boolean isDarkTheme) {
+                        runOnUiThread(() -> {
+                            try {
+                                if (hexColor != null && !hexColor.trim().isEmpty()) {
+                                    currentBarColor = Color.parseColor(hexColor.trim());
+                                }
+                                currentLightBars = !isDarkTheme;
+                                applySystemBarAppearance(currentBarColor, currentLightBars);
+                            } catch (Exception ignored) {}
+                        });
                     }
 
                     @android.webkit.JavascriptInterface
@@ -122,6 +125,89 @@ public class MainActivity extends BridgeActivity {
                 }, "AndroidNative");
             }
         }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        applySystemBarAppearance(currentBarColor, currentLightBars);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            applySystemBarAppearance(currentBarColor, currentLightBars);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applySystemBarAppearance(int bgColor, boolean lightBars) {
+        try {
+            Window window = getWindow();
+            if (window == null) return;
+
+            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+
+            window.setStatusBarColor(bgColor);
+            window.setNavigationBarColor(bgColor);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                window.setNavigationBarDividerColor(Color.TRANSPARENT);
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.setStatusBarContrastEnforced(false);
+                window.setNavigationBarContrastEnforced(false);
+            }
+
+            View decorView = window.getDecorView();
+            if (decorView != null) {
+                decorView.setBackgroundColor(bgColor);
+
+                // 1. Legacy systemUiVisibility flags (required by several OEM skins like MIUI/ColorOS)
+                int vis = decorView.getSystemUiVisibility();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    if (lightBars) {
+                        vis |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                    } else {
+                        vis &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    if (lightBars) {
+                        vis |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                    } else {
+                        vis &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+                    }
+                }
+                decorView.setSystemUiVisibility(vis);
+
+                // 2. AndroidX WindowInsetsControllerCompat
+                WindowInsetsControllerCompat controller =
+                    WindowCompat.getInsetsController(window, decorView);
+                if (controller != null) {
+                    controller.setAppearanceLightStatusBars(lightBars);
+                    controller.setAppearanceLightNavigationBars(lightBars);
+                }
+            }
+
+            // 3. Direct Android 11+ (API 30+) WindowInsetsController
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowInsetsController insetsController = window.getInsetsController();
+                if (insetsController != null) {
+                    int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                             | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                    insetsController.setSystemBarsAppearance(lightBars ? mask : 0, mask);
+                }
+            }
+
+            View contentView = findViewById(android.R.id.content);
+            if (contentView != null) {
+                contentView.setBackgroundColor(bgColor);
+            }
+        } catch (Exception ignored) {}
     }
 
     private boolean handleExternalUrl(Uri url) {
