@@ -1589,6 +1589,9 @@ async function handleLocalApiRequest(
       return jsonResponse({
         codes,
         settings,
+        notices: Array.isArray((settings as Record<string, unknown>).notices)
+          ? (settings as Record<string, unknown>).notices
+          : [],
         serverTime: new Date().toISOString(),
         subjects: CHAPTERS.map((ch) => ({
           id: ch.id,
@@ -1601,7 +1604,7 @@ async function handleLocalApiRequest(
     }
 
     if (method === "POST") {
-      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      const reqBody = init?.body ? JSON.parse(String(init.body)) : {};
       const {
         action = "generate",
         count = 1,
@@ -1627,8 +1630,11 @@ async function handleLocalApiRequest(
         noticeTitle,
         noticeBody,
         noticeImportant,
+        title,
+        body: noticeBodyField,
+        important,
         noticeId,
-      } = body;
+      } = reqBody;
 
       const nowMs = Date.now();
       const nowIso = new Date(nowMs).toISOString();
@@ -1857,6 +1863,10 @@ async function handleLocalApiRequest(
       }
 
       if (action === "add_notice") {
+        const effectiveTitle = noticeTitle ?? title;
+        const effectiveBody = noticeBody ?? noticeBodyField;
+        const effectiveImportant = noticeImportant ?? important;
+
         const sSnap = await getDoc(doc(db, "settings", "site"));
         const currentSettings = (sSnap.exists() ? sSnap.data() : {}) as Record<
           string,
@@ -1868,10 +1878,10 @@ async function handleLocalApiRequest(
             Date.now().toString(36) +
             "_" +
             Math.random().toString(36).slice(2, 6),
-          title: String(noticeTitle || "গুরুত্বপূর্ণ নোটিশ").trim(),
-          body: String(noticeBody || "").trim(),
+          title: String(effectiveTitle || "গুরুত্বপূর্ণ নোটিশ").trim(),
+          body: String(effectiveBody || "").trim(),
           createdAt: nowIso,
-          important: Boolean(noticeImportant),
+          important: Boolean(effectiveImportant),
         };
         const nextNotices = [
           newNotice,
@@ -1890,6 +1900,7 @@ async function handleLocalApiRequest(
         return jsonResponse({
           success: true,
           settings: updatedSettings,
+          notices: nextNotices,
           notice: newNotice,
           serverTime: nowIso,
         });
@@ -1917,6 +1928,7 @@ async function handleLocalApiRequest(
         return jsonResponse({
           success: true,
           settings: updatedSettings,
+          notices: nextNotices,
           serverTime: nowIso,
         });
       }

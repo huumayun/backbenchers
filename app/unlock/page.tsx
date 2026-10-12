@@ -22,7 +22,6 @@ import {
   Clock,
   BookOpen,
   AlertCircle,
-  Gift,
 } from "lucide-react";
 import {
   buildSmartWhatsAppUrl,
@@ -563,11 +562,11 @@ function UnlockPageContent() {
                           </span>
                         ) : accessInfo.badgeType === "timed" ? (
                           <span className="text-[10px] font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300 inline-flex items-center gap-1">
-                            <Clock size={10} /> {accessInfo.countdownTextBn}
+                            <Clock size={10} /> {accessInfo.countdownTextBn ? `${accessInfo.countdownTextBn} বাকি` : "টাইমড"}
                           </span>
                         ) : (
-                          <span className="text-[10px] font-bold text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300 inline-flex items-center gap-1">
-                            <Gift size={10} /> {accessInfo.badgeTextBn}
+                          <span className="text-[10px] font-bold text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300 inline-flex items-center">
+                            {accessInfo.countdownTextBn ? `ফ্রি • ${accessInfo.countdownTextBn} বাকি` : "ফ্রি"}
                           </span>
                         )}
                       </div>
@@ -669,12 +668,12 @@ function UnlockPageContent() {
                           </span>
                           {accessInfo.badgeType === "free" && (
                             <span className="text-[9px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
-                              বর্তমানে ফ্রি
+                              ফ্রি
                             </span>
                           )}
                           {accessInfo.badgeType === "timed" && (
                             <span className="text-[9px] font-bold bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded-full">
-                              টাইমড ({accessInfo.countdownTextBn})
+                              {accessInfo.countdownTextBn ? `${accessInfo.countdownTextBn} বাকি` : "টাইমড"}
                             </span>
                           )}
                         </div>

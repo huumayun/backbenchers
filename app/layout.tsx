@@ -40,6 +40,38 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&display=swap"
           rel="stylesheet"
         />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var h = window.location.hostname;
+                  var isDev = h === "localhost" || h === "127.0.0.1" || h.indexOf("192.168.") === 0;
+                  if (isDev && "serviceWorker" in navigator) {
+                    Promise.all([
+                      navigator.serviceWorker.getRegistrations().then(function(regs) {
+                        var hadSw = regs.length > 0;
+                        return Promise.all(regs.map(function(r) { return r.unregister(); })).then(function() { return hadSw; });
+                      }),
+                      "caches" in window
+                        ? caches.keys().then(function(keys) {
+                            var oldKeys = keys.filter(function(k) { return k.indexOf("ebook-app-shell") === 0; });
+                            var hadCache = oldKeys.length > 0;
+                            return Promise.all(oldKeys.map(function(k) { return caches.delete(k); })).then(function() { return hadCache; });
+                          })
+                        : Promise.resolve(false)
+                    ]).then(function(res) {
+                      if ((res[0] || res[1]) && !sessionStorage.getItem("ebook_sw_dev_purged")) {
+                        sessionStorage.setItem("ebook_sw_dev_purged", "1");
+                        window.location.reload();
+                      }
+                    });
+                  }
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
       </head>
       <body className="font-hind antialiased bg-[#FAF9F6]">
         <AuthProvider>

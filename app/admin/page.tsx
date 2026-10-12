@@ -460,24 +460,35 @@ export default function AdminPage() {
       } else {
         setGenError(data.error || "কোড তৈরি করা যায়নি।");
       }
+    } catch {
+      setGenError("সার্ভারের সাথে সংযোগ করা যায়নি। আবার চেষ্টা করুন।");
     } finally {
       setGenerating(false);
     }
   };
 
   const handleToggleDisableCode = async (code: string, disabled: boolean) => {
-    const res = await fetch("/api/admin/codes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        secret,
-        action: "toggle_disable",
-        code,
-        disabled,
-      }),
-    });
-    const data = await res.json();
-    if (data.success) setCodes(data.codes || []);
+    setCodes((prev) =>
+      prev.map((c) => (c.code === code ? { ...c, disabled } : c))
+    );
+    try {
+      const res = await fetch("/api/admin/codes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          secret,
+          action: "toggle_disable",
+          code,
+          disabled,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success && Array.isArray(data.codes)) {
+        setCodes(data.codes);
+      }
+    } catch (err) {
+      console.error("Failed to toggle disable code:", err);
+    }
   };
 
   const handleResetCode = async (code: string) => {
@@ -487,24 +498,56 @@ export default function AdminPage() {
       )
     )
       return;
-    const res = await fetch("/api/admin/codes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "reset", code }),
-    });
-    const data = await res.json();
-    if (data.success) setCodes(data.codes || []);
+    setCodes((prev) =>
+      prev.map((c) =>
+        c.code === code
+          ? {
+              ...c,
+              used: false,
+              usedCount: 0,
+              redeemers: [],
+              usedByUid: null,
+              usedByEmail: null,
+              usedByDevice: null,
+              usedByIP: null,
+              usedAt: null,
+            }
+          : c
+      )
+    );
+    try {
+      const res = await fetch("/api/admin/codes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret, action: "reset", code }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success && Array.isArray(data.codes)) {
+        setCodes(data.codes);
+      }
+    } catch (err) {
+      console.error("Failed to reset code:", err);
+    }
   };
 
   const handleDeleteCode = async (code: string) => {
     if (!confirm(`আপনি কি নিশ্চিত কোডটি মুছে ফেলতে চান: ${code}?`)) return;
-    const res = await fetch("/api/admin/codes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret, action: "delete", code }),
-    });
-    const data = await res.json();
-    if (data.success) setCodes(data.codes || []);
+    // Optimistically remove from UI immediately
+    setCodes((prev) => prev.filter((c) => c.code !== code));
+    setNewCodes((prev) => prev.filter((c) => c !== code));
+    try {
+      const res = await fetch("/api/admin/codes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret, action: "delete", code }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success && Array.isArray(data.codes)) {
+        setCodes(data.codes);
+      }
+    } catch (err) {
+      console.error("Failed to delete code:", err);
+    }
   };
 
   // Global Free Subject Actions
@@ -634,7 +677,13 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setNotices(data.notices || []);
+        setNotices(
+          Array.isArray(data.notices)
+            ? data.notices
+            : Array.isArray(data.settings?.notices)
+            ? data.settings.notices
+            : []
+        );
         setNoticeTitle("");
         setNoticeBody("");
         setNoticeImportant(false);
@@ -660,18 +709,29 @@ export default function AdminPage() {
 
   const handleDeleteNotice = async (noticeId: string) => {
     if (!confirm("আপনি কি নিশ্চিত এই নোটিশটি মুছে ফেলতে চান?")) return;
-    const res = await fetch("/api/admin/codes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        secret,
-        action: "delete_notice",
-        noticeId,
-      }),
-    });
-    const data = await res.json();
-    if (res.ok && data.success) {
-      setNotices(data.notices || []);
+    setNotices((prev) => prev.filter((n) => n.id !== noticeId));
+    try {
+      const res = await fetch("/api/admin/codes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          secret,
+          action: "delete_notice",
+          noticeId,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setNotices(
+          Array.isArray(data.notices)
+            ? data.notices
+            : Array.isArray(data.settings?.notices)
+            ? data.settings.notices
+            : []
+        );
+      }
+    } catch (err) {
+      console.error("Failed to delete notice:", err);
     }
   };
 
@@ -701,6 +761,8 @@ export default function AdminPage() {
         setSettingsSavedMsg("✅ সেটিংস সফলভাবে সেভ ও আপডেট হয়েছে!");
         setTimeout(() => setSettingsSavedMsg(""), 3500);
       }
+    } catch (err) {
+      console.error("Failed to save settings:", err);
     } finally {
       setSavingSettings(false);
     }

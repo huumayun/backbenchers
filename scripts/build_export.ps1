@@ -4,7 +4,10 @@ Write-Host "--- 1. Generating Book Bundle ---"
 npx tsx scripts/generate_bundle.ts
 
 Write-Host "--- 2. Cleaning previous .next and out directories ---"
-Stop-Process -Name "node" -Force -ErrorAction SilentlyContinue
+$portProc = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+if ($portProc) {
+    Stop-Process -Id $portProc -Force -ErrorAction SilentlyContinue
+}
 Start-Sleep -Milliseconds 500
 Remove-Item -Recurse -Force ".next" -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "out" -ErrorAction SilentlyContinue

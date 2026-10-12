@@ -1,11 +1,19 @@
-const CACHE_NAME = "ebook-app-shell-v2";
+const CACHE_NAME = "ebook-app-shell-v3";
 const PRECACHE_ROUTES = ["/", "/read", "/flipbook", "/dashboard", "/login"];
+let isWarming = false;
+let lastWarmTime = 0;
 
-async function warmRouteAndScripts(cache, routePath) {
+async function warmRouteAndScripts(cache, routePath, forceNetwork = false) {
   try {
-    const res = await fetch(routePath, { cache: "no-cache" });
+    const routeUrl = self.location.origin + routePath;
+    if (!forceNetwork) {
+      const cachedRoute = await cache.match(routeUrl);
+      if (cachedRoute) return;
+    }
+
+    const res = await fetch(routePath);
     if (!res || res.status !== 200) return;
-    await cache.put(new Request(self.location.origin + routePath), res.clone());
+    await cache.put(new Request(routeUrl), res.clone());
 
     const html = await res.text();
     const assetMatches = html.match(/\/_next\/static\/[^"'\s)>]+/g) || [];
@@ -36,7 +44,7 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
       await Promise.all(
-        PRECACHE_ROUTES.map((route) => warmRouteAndScripts(cache, route))
+        PRECACHE_ROUTES.map((route) => warmRouteAndScripts(cache, route, false))
       );
     })
   );
@@ -57,29 +65,39 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("message", (event) => {
   if (!event.data || event.data.type !== "WARM_OFFLINE_CACHE") return;
+  const now = Date.now();
+  if (isWarming || now - lastWarmTime < 300000) return;
+  isWarming = true;
+  lastWarmTime = now;
+
   const extraUrls = Array.isArray(event.data.urls) ? event.data.urls : [];
 
   event.waitUntil(
-    caches.open(CACHE_NAME).then(async (cache) => {
-      await Promise.all(
-        extraUrls.map(async (u) => {
-          try {
-            const existing = await cache.match(u);
-            if (!existing) {
-              const r = await fetch(u);
-              if (r && r.status === 200) {
-                await cache.put(u, r);
+    caches
+      .open(CACHE_NAME)
+      .then(async (cache) => {
+        await Promise.all(
+          extraUrls.map(async (u) => {
+            try {
+              const existing = await cache.match(u);
+              if (!existing) {
+                const r = await fetch(u);
+                if (r && r.status === 200) {
+                  await cache.put(u, r);
+                }
               }
+            } catch {
+              // ignore
             }
-          } catch {
-            // ignore
-          }
-        })
-      );
-      await Promise.all(
-        PRECACHE_ROUTES.map((route) => warmRouteAndScripts(cache, route))
-      );
-    })
+          })
+        );
+        await Promise.all(
+          PRECACHE_ROUTES.map((route) => warmRouteAndScripts(cache, route, false))
+        );
+      })
+      .finally(() => {
+        isWarming = false;
+      })
   );
 });
 
@@ -90,10 +108,19 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
+  // Never intercept requests in local dev mode (localhost / LAN dev server)
+  if (
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    url.hostname.startsWith("192.168.")
+  ) {
+    return;
+  }
+
   // Never cache dynamic API routes in SW; IndexedDB handles offline book data
   if (url.pathname.startsWith("/api/")) return;
 
-  // 1. Static Next.js chunks, CSS, icons, fonts -> Cache-First, fallback to Network & store in Cache
+  // 1. Static Next.js chunks, CSS, icons, fonts -> Network-First, fallback to Cache when offline
   if (
     url.pathname.startsWith("/_next/static/") ||
     url.pathname.endsWith(".png") ||
@@ -101,18 +128,25 @@ self.addEventListener("fetch", (event) => {
     url.pathname.endsWith(".json")
   ) {
     event.respondWith(
-      caches.open(CACHE_NAME).then(async (cache) => {
-        const cached =
-          (await cache.match(request)) ||
-          (await cache.match(url.origin + url.pathname));
-        if (cached) return cached;
-        const netRes = await fetch(request);
-        if (netRes && netRes.status === 200) {
-          cache.put(request, netRes.clone());
-          cache.put(url.origin + url.pathname, netRes.clone());
-        }
-        return netRes;
-      })
+      fetch(request)
+        .then((netRes) => {
+          if (netRes && netRes.status === 200) {
+            const copy = netRes.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(request, copy.clone());
+              cache.put(url.origin + url.pathname, copy);
+            });
+          }
+          return netRes;
+        })
+        .catch(async () => {
+          const cache = await caches.open(CACHE_NAME);
+          const cached =
+            (await cache.match(request)) ||
+            (await cache.match(url.origin + url.pathname));
+          if (cached) return cached;
+          return Response.error();
+        })
     );
     return;
   }

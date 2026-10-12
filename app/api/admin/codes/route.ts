@@ -76,6 +76,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     codes,
     settings,
+    notices: settings.notices || [],
     subjects,
     serverTime: new Date().toISOString(),
   });
@@ -83,7 +84,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const reqBody = await req.json();
     const {
       secret,
       action = "generate",
@@ -113,8 +114,11 @@ export async function POST(req: NextRequest) {
       noticeTitle,
       noticeBody,
       noticeImportant,
+      title,
+      body: noticeBodyField,
+      important,
       noticeId,
-    } = body;
+    } = reqBody;
 
     if (!(await verifyAdminSecret(secret))) {
       return NextResponse.json(
@@ -371,7 +375,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "add_notice") {
-      if (!noticeBody || !String(noticeBody).trim()) {
+      const effectiveTitle = noticeTitle ?? title;
+      const effectiveBody = noticeBody ?? noticeBodyField;
+      const effectiveImportant = noticeImportant ?? important;
+
+      if (!effectiveBody || !String(effectiveBody).trim()) {
         return NextResponse.json(
           { error: "নোটিশের বিস্তারিত টেক্সট লিখুন।" },
           { status: 400 }
@@ -381,10 +389,10 @@ export async function POST(req: NextRequest) {
       const nowIso = new Date().toISOString();
       const newNotice: NoticeItem = {
         id: "ntc_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6),
-        title: String(noticeTitle || "গুরুত্বপূর্ণ নোটিশ").trim(),
-        body: String(noticeBody).trim(),
+        title: String(effectiveTitle || "গুরুত্বপূর্ণ নোটিশ").trim(),
+        body: String(effectiveBody).trim(),
         createdAt: nowIso,
-        important: Boolean(noticeImportant),
+        important: Boolean(effectiveImportant),
       };
       const nextNotices = [newNotice, ...(currentSettings.notices || [])];
       const updated = await updateSiteSettings({
@@ -395,6 +403,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         settings: updated,
+        notices: updated.notices || [],
         notice: newNotice,
         serverTime: nowIso,
       });
@@ -413,6 +422,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         settings: updated,
+        notices: updated.notices || [],
         serverTime: new Date().toISOString(),
       });
     }

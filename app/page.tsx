@@ -14,7 +14,6 @@ import { isCapacitorNativeApp } from "@/lib/capacitor/localApiBridge";
 import {
   Lock,
   Unlock,
-  Key,
   BookOpen,
   Layers,
   Download,
@@ -27,8 +26,6 @@ import {
   ShieldCheck,
   CheckCircle2,
   Bell,
-  Clock,
-  Gift,
   Calendar,
 } from "lucide-react";
 
@@ -402,33 +399,26 @@ export default function HomePage() {
                                   </span>
                                 )
                               ) : accessInfo.badgeType === "timed" ? (
-                                <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-amber-300 text-black px-1.5 py-0.5 rounded-full shadow-xs">
-                                  <Clock size={9} /> টাইমড
+                                <span className="inline-flex items-center text-[8px] sm:text-[9px] font-extrabold bg-amber-300 text-black px-2 py-0.5 rounded-full shadow-xs">
+                                  টাইমড
                                 </span>
                               ) : accessInfo.badgeType === "free" ? (
-                                <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-emerald-300 text-black px-1.5 py-0.5 rounded-full shadow-xs">
-                                  <Gift size={9} /> ফ্রি
+                                <span className="inline-flex items-center text-[8px] sm:text-[9px] font-extrabold bg-emerald-300 text-black px-2 py-0.5 rounded-full shadow-xs">
+                                  ফ্রি
                                 </span>
                               ) : (
                                 <Lock size={11} className="opacity-75" />
                               )}
                             </div>
 
-                            {/* Countdown Banner ONLY for Timed or Free (Never for Permanent) */}
-                            {accessInfo.badgeType === "timed" &&
+                            {/* Compact Countdown Pill ONLY when Timed or Free has remaining duration */}
+                            {(accessInfo.badgeType === "timed" ||
+                              accessInfo.badgeType === "free") &&
                               accessInfo.countdownTextBn && (
-                                <div className="text-[8.5px] sm:text-[9.5px] font-bold bg-black/35 text-amber-200 px-1.5 py-0.5 rounded-md leading-tight truncate">
-                                  ⏳ {accessInfo.countdownTextBn}
+                                <div className="text-[8px] sm:text-[9px] font-semibold bg-black/25 text-white/95 px-1.5 py-0.5 rounded-md leading-tight text-center whitespace-nowrap">
+                                  {accessInfo.countdownTextBn} বাকি
                                 </div>
                               )}
-                            {accessInfo.badgeType === "free" && (
-                              <div className="text-[8.5px] sm:text-[9.5px] font-bold bg-black/35 text-emerald-200 px-1.5 py-0.5 rounded-md leading-tight truncate">
-                                🎁{" "}
-                                {accessInfo.countdownTextBn
-                                  ? `ফ্রি: ${accessInfo.countdownTextBn}`
-                                  : "ফ্রি উন্মুক্ত"}
-                              </div>
-                            )}
                           </div>
 
                           <div className="my-auto py-1">
@@ -908,14 +898,6 @@ export default function HomePage() {
             </span>
           )}
         </button>
-        <Link
-          href="/unlock"
-          className="h-11 sm:h-12 px-3.5 sm:px-5 rounded-full bg-amber-400 hover:bg-amber-300 text-amber-950 border border-amber-500/30 font-bold text-xs sm:text-sm shadow-xl flex items-center gap-1.5 active:scale-95 transition"
-          title="কোড দিয়ে বই আনলক করুন"
-        >
-          <Key size={15} />
-          <span className="hidden sm:inline">আনলক</span>
-        </Link>
       </div>
     </div>
   );

@@ -1090,19 +1090,36 @@ function ReaderInner() {
         {(currentBookAccessInfo.badgeType === "free" ||
           currentBookAccessInfo.badgeType === "timed") && (
           <div
-            className={`mb-5 rounded-2xl px-4 py-2.5 border flex flex-wrap items-center justify-between gap-2.5 text-xs shadow-2xs ${
-              currentBookAccessInfo.badgeType === "free"
-                ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-950 dark:text-emerald-200"
-                : "bg-amber-500/10 border-amber-500/25 text-amber-950 dark:text-amber-200"
+            className={`max-w-md mx-auto mb-5 rounded-xl px-3.5 py-2 border flex items-center justify-between gap-2 text-[11px] sm:text-xs shadow-2xs ${
+              theme === "dark"
+                ? currentBookAccessInfo.badgeType === "free"
+                  ? "bg-emerald-950/60 border-emerald-700/50 text-emerald-100"
+                  : "bg-amber-950/60 border-amber-700/50 text-amber-100"
+                : currentBookAccessInfo.badgeType === "free"
+                ? "bg-emerald-50 border-emerald-200 text-emerald-950"
+                : "bg-amber-50 border-amber-200 text-amber-950"
             }`}
           >
             <div className="flex items-center gap-2 min-w-0">
-              <span className="font-extrabold truncate">
-                {currentBookAccessInfo.badgeType === "free" ? "🎁 ফ্রি অ্যাক্সেস" : "⏳ টাইমড অ্যাক্সেস"} • বই {currentChapter.bookNumber} ({currentChapter.titleBn}):
+              <span
+                className={`font-bold px-2 py-0.5 rounded-md text-[10px] sm:text-[11px] shrink-0 ${
+                  theme === "dark"
+                    ? currentBookAccessInfo.badgeType === "free"
+                      ? "bg-emerald-500/25 text-emerald-200"
+                      : "bg-amber-500/25 text-amber-200"
+                    : currentBookAccessInfo.badgeType === "free"
+                    ? "bg-emerald-600 text-white"
+                    : "bg-amber-500 text-black"
+                }`}
+              >
+                {currentBookAccessInfo.badgeType === "free"
+                  ? "ফ্রি"
+                  : "টাইমড"}
               </span>
-              <span className="font-mono font-bold px-2 py-0.5 rounded-full bg-black/10 dark:bg-white/10 shrink-0">
-                {currentBookAccessInfo.countdownTextBn ||
-                  currentBookAccessInfo.badgeTextBn}
+              <span className="font-semibold truncate">
+                {currentBookAccessInfo.countdownTextBn
+                  ? `${currentBookAccessInfo.countdownTextBn} বাকি`
+                  : "ফ্রি উন্মুক্ত"}
               </span>
             </div>
             <button
@@ -1110,7 +1127,7 @@ function ReaderInner() {
               onClick={() => navigateToUnlockOrLogin(chapterIndex)}
               className="text-[11px] font-bold underline underline-offset-2 cursor-pointer shrink-0 hover:opacity-80"
             >
-              কোড দিয়ে স্থায়ী আনলক করুন →
+              স্থায়ী আনলক →
             </button>
           </div>
         )}

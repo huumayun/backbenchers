@@ -66,16 +66,26 @@ export function formatRemainingDurationBn(
   if (days === 0 && hours === 0) {
     return {
       expired: false,
-      textBn: `আর ০ দিন ০ ঘণ্টা (${toBengaliDigits(minutes)} মি.) বাকি`,
+      textBn: `${toBengaliDigits(minutes)} মিনিট`,
       days: 0,
       hours: 0,
       minutes,
     };
   }
 
+  if (days === 0) {
+    return {
+      expired: false,
+      textBn: `${toBengaliDigits(hours)} ঘণ্টা ${toBengaliDigits(minutes)} মি.`,
+      days: 0,
+      hours,
+      minutes,
+    };
+  }
+
   return {
     expired: false,
-    textBn: `আর ${toBengaliDigits(days)} দিন ${toBengaliDigits(hours)} ঘণ্টা বাকি`,
+    textBn: `${toBengaliDigits(days)} দিন ${toBengaliDigits(hours)} ঘণ্টা`,
     days,
     hours,
     minutes,
@@ -334,13 +344,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     Record<string, ReadingProgressData>
   >({});
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const serverTimeOffsetRef = useRef<number>(0);
+  const hasSyncedTimeRef = useRef<boolean>(false);
+  const lastRefreshSettingsAtRef = useRef<number>(0);
+  const isRefreshingSettingsRef = useRef<boolean>(false);
 
   const updateServerTimeOffset = useCallback((isoServerTime?: string | null) => {
     if (!isoServerTime) return;
     const parsed = Date.parse(isoServerTime);
     if (!isNaN(parsed)) {
       const offset = parsed - Date.now();
-      setServerTimeOffsetMs(offset);
+      const prevOffset = serverTimeOffsetRef.current;
+      serverTimeOffsetRef.current = offset;
+      if (!hasSyncedTimeRef.current || Math.abs(offset - prevOffset) > 5000) {
+        hasSyncedTimeRef.current = true;
+        setServerTimeOffsetMs(offset);
+      }
       try {
         localStorage.setItem("ebook_server_time_offset", String(offset));
       } catch {
@@ -389,30 +408,61 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
   }, []);
 
-  const refreshSiteSettings = useCallback(async () => {
-    if (!isDeviceOnline()) return;
-    try {
-      const res = await fetch("/api/unlock", { cache: "no-store" });
-      if (!res.ok) return;
-      const d = await res.json();
-      if (d.serverTime) {
-        updateServerTimeOffset(d.serverTime);
+  const refreshSiteSettings = useCallback(
+    async (force: boolean = false) => {
+      if (!isDeviceOnline()) return;
+      if (isRefreshingSettingsRef.current) return;
+      const win =
+        typeof window !== "undefined"
+          ? (window as unknown as {
+              __ebookLastSettingsFetchAt?: number;
+              __ebookIsFetchingSettings?: boolean;
+            })
+          : null;
+      if (win?.__ebookIsFetchingSettings) return;
+      const now = Date.now();
+      const lastFetch = Math.max(
+        lastRefreshSettingsAtRef.current,
+        win?.__ebookLastSettingsFetchAt || 0
+      );
+      if (!force && now - lastFetch < 15000) {
+        return;
       }
-      if (d.settings) {
-        setSettings((prev) => {
-          const next = { ...prev, ...d.settings };
-          try {
-            localStorage.setItem("ebook_site_settings", JSON.stringify(next));
-          } catch {
-            // ignore
-          }
-          return next;
-        });
+      isRefreshingSettingsRef.current = true;
+      lastRefreshSettingsAtRef.current = now;
+      if (win) {
+        win.__ebookIsFetchingSettings = true;
+        win.__ebookLastSettingsFetchAt = now;
       }
-    } catch {
-      // ignore network error
-    }
-  }, [updateServerTimeOffset]);
+      try {
+        const res = await fetch("/api/unlock", { cache: "no-store" });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (d.serverTime) {
+          updateServerTimeOffset(d.serverTime);
+        }
+        if (d.settings) {
+          setSettings((prev) => {
+            const next = { ...prev, ...d.settings };
+            try {
+              localStorage.setItem("ebook_site_settings", JSON.stringify(next));
+            } catch {
+              // ignore
+            }
+            return next;
+          });
+        }
+      } catch {
+        // ignore network error
+      } finally {
+        isRefreshingSettingsRef.current = false;
+        if (win) {
+          win.__ebookIsFetchingSettings = false;
+        }
+      }
+    },
+    [updateServerTimeOffset]
+  );
 
   // Verify active session & fetch unlocked subjects from server
   const verifySessionWithServer = useCallback(
@@ -664,7 +714,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSubjectAccessMap((prev) => ({ ...prev, ...cloudSubjectAccess! }));
       }
 
-      const effectiveNowMs = Date.now() + serverTimeOffsetMs;
+      const effectiveNowMs = Date.now() + serverTimeOffsetRef.current;
       const filteredCloudUnlocked = cloudUnlocked.filter((id) => {
         const rec = cloudSubjectAccess?.[id];
         if (!rec) return true;
@@ -768,17 +818,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // ignore
       }
 
-      await pushUserDataToCloud(
-        uid,
-        {
-          bookmarks: mergedBm,
-          progress: mergedProg,
-          perBookProgress: mergedPerBook,
-        },
-        activeToken
-      );
+      if (mergedBm.length > cloudBm.length) {
+        await pushUserDataToCloud(
+          uid,
+          {
+            bookmarks: mergedBm,
+            progress: mergedProg,
+            perBookProgress: mergedPerBook,
+          },
+          activeToken
+        );
+      }
     },
-    [pushUserDataToCloud, handleSessionInvalidated, serverTimeOffsetMs]
+    [pushUserDataToCloud, handleSessionInvalidated]
   );
 
   // Load initial state on mount
@@ -792,7 +844,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const savedOffset = localStorage.getItem("ebook_server_time_offset");
       if (savedOffset && !isNaN(Number(savedOffset))) {
-        setServerTimeOffsetMs(Number(savedOffset));
+        const parsedOffset = Number(savedOffset);
+        serverTimeOffsetRef.current = parsedOffset;
+        setServerTimeOffsetMs(parsedOffset);
       }
 
       const savedSettings = localStorage.getItem("ebook_site_settings");
@@ -844,50 +898,101 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // ignore
     }
 
+    const isAdminRoute =
+      typeof window !== "undefined" &&
+      window.location.pathname.startsWith("/admin");
+
+    const winBoot =
+      typeof window !== "undefined"
+        ? (window as unknown as { __ebookLastBootSyncAt?: number })
+        : null;
+    const nowBoot = Date.now();
+    const shouldRunBootNetwork =
+      !isAdminRoute &&
+      (!winBoot?.__ebookLastBootSyncAt ||
+        nowBoot - winBoot.__ebookLastBootSyncAt > 15000);
+    if (winBoot && shouldRunBootNetwork) {
+      winBoot.__ebookLastBootSyncAt = nowBoot;
+    }
+
     // Load site settings & free windows when online
-    if (isDeviceOnline()) {
+    if (isDeviceOnline() && shouldRunBootNetwork) {
       refreshSiteSettings();
     }
 
-    // Register Service Worker & warm offline cache with all loaded scripts/styles & routes
+    // Register Service Worker in production only; unregister & purge stale cache in local dev
     if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-      const sendWarmCacheMsg = (sw: ServiceWorker | null) => {
-        if (!sw) return;
-        const loadedUrls: string[] = [];
-        document
-          .querySelectorAll<HTMLScriptElement>("script[src]")
-          .forEach((s) => {
-            if (s.src && s.src.startsWith(window.location.origin)) {
-              loadedUrls.push(s.src);
-            }
-          });
-        document
-          .querySelectorAll<HTMLLinkElement>("link[rel='stylesheet'][href]")
-          .forEach((l) => {
-            if (l.href && l.href.startsWith(window.location.origin)) {
-              loadedUrls.push(l.href);
-            }
-          });
-        sw.postMessage({ type: "WARM_OFFLINE_CACHE", urls: loadedUrls });
-      };
+      const isLocalDev =
+        process.env.NODE_ENV === "development" ||
+        window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1" ||
+        window.location.hostname.startsWith("192.168.");
 
-      navigator.serviceWorker
-        .register("/sw.js")
-        .then((reg) => {
-          sendWarmCacheMsg(
-            reg.active || reg.waiting || reg.installing || navigator.serviceWorker.controller
-          );
-        })
-        .catch(() => {});
+      if (isLocalDev) {
+        navigator.serviceWorker
+          .getRegistrations()
+          .then((regs) => {
+            regs.forEach((r) => r.unregister());
+          })
+          .catch(() => {});
+        if ("caches" in window) {
+          caches
+            .keys()
+            .then((keys) => {
+              keys
+                .filter((k) => k.startsWith("ebook-app-shell"))
+                .forEach((k) => caches.delete(k));
+            })
+            .catch(() => {});
+        }
+      } else if (shouldRunBootNetwork) {
+        const sendWarmCacheMsg = (sw: ServiceWorker | null) => {
+          if (!sw) return;
+          try {
+            if (sessionStorage.getItem("ebook_sw_warmed") === "1") return;
+            sessionStorage.setItem("ebook_sw_warmed", "1");
+          } catch {
+            // ignore
+          }
+          const loadedUrls: string[] = [];
+          document
+            .querySelectorAll<HTMLScriptElement>("script[src]")
+            .forEach((s) => {
+              if (s.src && s.src.startsWith(window.location.origin)) {
+                loadedUrls.push(s.src);
+              }
+            });
+          document
+            .querySelectorAll<HTMLLinkElement>("link[rel='stylesheet'][href]")
+            .forEach((l) => {
+              if (l.href && l.href.startsWith(window.location.origin)) {
+                loadedUrls.push(l.href);
+              }
+            });
+          sw.postMessage({ type: "WARM_OFFLINE_CACHE", urls: loadedUrls });
+        };
 
-      navigator.serviceWorker.ready
-        .then((reg) => {
-          sendWarmCacheMsg(reg.active || navigator.serviceWorker.controller);
-        })
-        .catch(() => {});
+        navigator.serviceWorker
+          .register("/sw.js")
+          .then((reg) => {
+            sendWarmCacheMsg(
+              reg.active ||
+                reg.waiting ||
+                reg.installing ||
+                navigator.serviceWorker.controller
+            );
+          })
+          .catch(() => {});
+
+        navigator.serviceWorker.ready
+          .then((reg) => {
+            sendWarmCacheMsg(reg.active || navigator.serviceWorker.controller);
+          })
+          .catch(() => {});
+      }
     }
 
-    if (initialProfile?.uid && initialSessionToken) {
+    if (initialProfile?.uid && initialSessionToken && shouldRunBootNetwork) {
       verifySessionWithServer(initialProfile.uid, initialSessionToken);
       syncUserDataFromCloud(initialProfile.uid, initialSessionToken);
       renewAllOfflineLeasesOnServer(
@@ -899,7 +1004,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const onBackOnline = () => {
       try {
-        refreshSiteSettings();
+        if (window.location.pathname.startsWith("/admin")) return;
+        refreshSiteSettings(true);
         const profRaw = localStorage.getItem("ebook_user_profile");
         const tok = localStorage.getItem("ebook_session_token");
         const prof = profRaw ? JSON.parse(profRaw) : null;
@@ -946,14 +1052,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const interval = setInterval(() => {
       setClockTick((t) => t + 1);
+      if (
+        typeof window !== "undefined" &&
+        window.location.pathname.startsWith("/admin")
+      ) {
+        return;
+      }
       refreshSiteSettings();
       if (activeUid && sessionToken) {
         verifySessionWithServer(activeUid, sessionToken);
       }
-    }, 15000);
+    }, 30000);
 
     const onFocus = () => {
       setClockTick((t) => t + 1);
+      if (
+        typeof window !== "undefined" &&
+        window.location.pathname.startsWith("/admin")
+      ) {
+        return;
+      }
       refreshSiteSettings();
       if (activeUid && sessionToken) {
         verifySessionWithServer(activeUid, sessionToken);
@@ -1523,7 +1641,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
       }
 
-      const nowMs = Date.now() + serverTimeOffsetMs;
+      const nowMs = Date.now() + serverTimeOffsetRef.current;
 
       // 2. Check user's timed code access
       const rec =
@@ -1578,8 +1696,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             expiresAt: null,
             freeWindowEndAt: null,
             badgeType: "free",
-            badgeTextBn: "ফ্রি (অনির্দিষ্টকাল)",
-            countdownTextBn: "ফ্রি (অনির্দিষ্টকাল)",
+            badgeTextBn: "ফ্রি উন্মুক্ত",
+            countdownTextBn: null,
           };
         }
         const rem = formatRemainingDurationBn(freeWin.endAt, nowMs);
@@ -1615,7 +1733,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [
       resolveSubjectId,
       isSubjectPermanentlyUnlocked,
-      serverTimeOffsetMs,
       subjectAccessMap,
       profile?.subjectAccess,
       settings.freeSubjects,

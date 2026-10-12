@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { db } from "@/lib/firebase/config";
 import {
@@ -155,6 +155,7 @@ export interface UserReadingDataRecord {
 
 interface LocalStoreData {
   codes: Record<string, UnlockCodeRecord>;
+  deletedCodes?: string[];
   users: Record<string, UserAccountRecord>;
   userReadingData: Record<string, UserReadingDataRecord>;
   sessions: Record<string, UserLoginSessionRecord>;
@@ -163,7 +164,9 @@ interface LocalStoreData {
 }
 
 const SECRET_KEY = process.env.ADMIN_SECRET || "backbencher_botany_admin_2026";
-const STORE_PATH = join(process.cwd(), "content", "store-backup.json");
+const SEED_STORE_PATH = join(process.cwd(), "content", "store-backup.json");
+const RUNTIME_STORE_DIR = join(process.cwd(), ".next", "cache");
+const RUNTIME_STORE_PATH = join(RUNTIME_STORE_DIR, "store-backup.json");
 
 const DEFAULT_SETTINGS: SiteSettings = {
   price: "৳৪৯ (প্রতি বিষয়)",
@@ -187,6 +190,7 @@ const DEFAULT_SETTINGS: SiteSettings = {
 const globalForStore = globalThis as unknown as {
   __ebookStore?: LocalStoreData;
   __redeemingLocks?: Set<string>;
+  __lastSettingsSyncAt?: number;
 };
 
 function getRedeemingLocks(): Set<string> {
@@ -198,6 +202,9 @@ function getRedeemingLocks(): Set<string> {
 
 function loadLocalStore(): LocalStoreData {
   if (globalForStore.__ebookStore) {
+    if (!Array.isArray(globalForStore.__ebookStore.deletedCodes)) {
+      globalForStore.__ebookStore.deletedCodes = [];
+    }
     if (!globalForStore.__ebookStore.users) {
       globalForStore.__ebookStore.users = {};
     }
@@ -216,11 +223,25 @@ function loadLocalStore(): LocalStoreData {
     return globalForStore.__ebookStore;
   }
   try {
-    if (existsSync(STORE_PATH)) {
-      const raw = readFileSync(STORE_PATH, "utf-8");
+    const targetReadPath = existsSync(RUNTIME_STORE_PATH)
+      ? RUNTIME_STORE_PATH
+      : existsSync(SEED_STORE_PATH)
+      ? SEED_STORE_PATH
+      : null;
+
+    if (targetReadPath) {
+      const raw = readFileSync(targetReadPath, "utf-8");
       const parsed = JSON.parse(raw) as Partial<LocalStoreData>;
+      const deletedCodes = Array.isArray(parsed.deletedCodes)
+        ? parsed.deletedCodes
+        : [];
+      const codes = { ...(parsed.codes || {}) };
+      for (const delCode of deletedCodes) {
+        delete codes[delCode];
+      }
       globalForStore.__ebookStore = {
-        codes: parsed.codes || {},
+        codes,
+        deletedCodes,
         users: parsed.users || {},
         userReadingData: parsed.userReadingData || {},
         sessions: parsed.sessions || {},
@@ -253,6 +274,7 @@ function loadLocalStore(): LocalStoreData {
         createdAt: new Date().toISOString(),
       },
     },
+    deletedCodes: [],
     users: {},
     userReadingData: {},
     sessions: {},
@@ -266,7 +288,10 @@ function loadLocalStore(): LocalStoreData {
 function saveLocalStore(data: LocalStoreData) {
   globalForStore.__ebookStore = data;
   try {
-    writeFileSync(STORE_PATH, JSON.stringify(data, null, 2), "utf-8");
+    if (!existsSync(RUNTIME_STORE_DIR)) {
+      mkdirSync(RUNTIME_STORE_DIR, { recursive: true });
+    }
+    writeFileSync(RUNTIME_STORE_PATH, JSON.stringify(data, null, 2), "utf-8");
   } catch {
     // On read-only serverless filesystem (like Vercel), ignore file write error
   }
@@ -821,7 +846,6 @@ export async function getUserAccountById(
         mergedDraft.hasAccess = activeUnlocked.length > 0;
         user = mergedDraft;
         store.users[uid] = user;
-        saveLocalStore(store);
       }
     } catch {
       // Fallback to local store
@@ -954,6 +978,9 @@ function normalizeCodeRecord(
 export async function getCodeRecord(code: string): Promise<UnlockCodeRecord | null> {
   const normalized = code.toUpperCase().trim();
   const store = loadLocalStore();
+  if ((store.deletedCodes || []).includes(normalized)) {
+    return null;
+  }
 
   try {
     const snap = await getDoc(doc(db, "unlock_codes", normalized));
@@ -962,7 +989,6 @@ export async function getCodeRecord(code: string): Promise<UnlockCodeRecord | nu
       const localRecord = store.codes[normalized];
       const merged = normalizeCodeRecord(data, localRecord);
       store.codes[normalized] = merged;
-      saveLocalStore(store);
       return merged;
     }
   } catch {
@@ -977,6 +1003,9 @@ export async function getCodeRecord(code: string): Promise<UnlockCodeRecord | nu
 export async function saveCodeRecord(record: UnlockCodeRecord): Promise<void> {
   const normalized = record.code.toUpperCase().trim();
   const store = loadLocalStore();
+  if (Array.isArray(store.deletedCodes)) {
+    store.deletedCodes = store.deletedCodes.filter((c) => c !== normalized);
+  }
   const normalizedRecord = normalizeCodeRecord(
     { ...record, code: normalized },
     store.codes[normalized]
@@ -997,6 +1026,9 @@ export async function deleteCodeRecord(code: string): Promise<void> {
   const normalized = code.toUpperCase().trim();
   const store = loadLocalStore();
   delete store.codes[normalized];
+  store.deletedCodes = Array.from(
+    new Set([...(store.deletedCodes || []), normalized])
+  );
   saveLocalStore(store);
 
   try {
@@ -1008,22 +1040,24 @@ export async function deleteCodeRecord(code: string): Promise<void> {
 
 export async function listAllCodes(): Promise<UnlockCodeRecord[]> {
   const store = loadLocalStore();
+  const deletedSet = new Set(store.deletedCodes || []);
   try {
     const snap = await getDocs(collection(db, "unlock_codes"));
     snap.docs.forEach((d) => {
       const data = d.data() as UnlockCodeRecord;
       if (data.code) {
-        const key = data.code.toUpperCase();
+        const key = data.code.toUpperCase().trim();
+        if (deletedSet.has(key)) return;
         const existing = store.codes[key];
         store.codes[key] = normalizeCodeRecord(data, existing);
       }
     });
-    saveLocalStore(store);
   } catch {
     // Fallback to local store
   }
 
   return Object.values(store.codes)
+    .filter((c) => !deletedSet.has((c.code || "").toUpperCase().trim()))
     .map((c) => normalizeCodeRecord(c))
     .sort(
       (a, b) =>
@@ -1442,8 +1476,16 @@ export async function redeemUnlockCodeForUser(params: {
 
 export async function getSiteSettings(): Promise<SiteSettings> {
   const store = loadLocalStore();
+  const now = Date.now();
+  if (
+    globalForStore.__lastSettingsSyncAt &&
+    now - globalForStore.__lastSettingsSyncAt < 10000
+  ) {
+    return store.settings;
+  }
   try {
     const snap = await getDoc(doc(db, "settings", "site"));
+    globalForStore.__lastSettingsSyncAt = now;
     if (snap.exists()) {
       const data = snap.data() as Partial<SiteSettings>;
       store.settings = {
@@ -1458,7 +1500,6 @@ export async function getSiteSettings(): Promise<SiteSettings> {
           ? data.notices
           : store.settings.notices || [],
       };
-      saveLocalStore(store);
     }
   } catch {
     // Fallback to local store
@@ -1478,6 +1519,7 @@ export async function updateSiteSettings(newSettings: Partial<SiteSettings>): Pr
       ? newSettings.notices
       : store.settings.notices || [],
   };
+  globalForStore.__lastSettingsSyncAt = Date.now();
   saveLocalStore(store);
 
   try {
@@ -1694,7 +1736,6 @@ export async function getUserReadingData(
         uid,
         unlockedSubjects: mergedUnlocked,
       };
-      saveLocalStore(store);
       return store.userReadingData[uid];
     }
   } catch {
