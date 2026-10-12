@@ -67,46 +67,68 @@ public class MainActivity extends BridgeActivity {
             bridge.setWebViewClient(new BridgeWebViewClient(bridge) {
                 @Override
                 public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                    if (request == null || request.getUrl() == null) {
-                        return super.shouldOverrideUrlLoading(view, request);
+                    if (request != null && handleExternalUrl(request.getUrl())) {
+                        return true;
                     }
-                    Uri url = request.getUrl();
-                    String scheme = url.getScheme();
-                    String urlStr = url.toString();
-
-                    if (scheme != null && (
-                        scheme.equalsIgnoreCase("whatsapp") ||
-                        scheme.equalsIgnoreCase("tg") ||
-                        scheme.equalsIgnoreCase("intent") ||
-                        urlStr.contains("wa.me") ||
-                        urlStr.contains("api.whatsapp.com") ||
-                        urlStr.contains("t.me")
-                    )) {
-                        try {
-                            Intent intent;
-                            if ("intent".equalsIgnoreCase(scheme)) {
-                                intent = Intent.parseUri(urlStr, Intent.URI_INTENT_SCHEME);
-                            } else {
-                                intent = new Intent(Intent.ACTION_VIEW, url);
-                            }
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                            startActivity(intent);
-                            return true;
-                        } catch (Exception e) {
-                            try {
-                                if ("whatsapp".equalsIgnoreCase(scheme)) {
-                                    Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(urlStr.replace("whatsapp://send/", "https://api.whatsapp.com/send/")));
-                                    browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                                    startActivity(browserIntent);
-                                    return true;
-                                }
-                            } catch (Exception ignored) {}
-                        }
-                    }
-
                     return super.shouldOverrideUrlLoading(view, request);
                 }
+
+                @SuppressWarnings("deprecation")
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                    if (url != null && handleExternalUrl(Uri.parse(url))) {
+                        return true;
+                    }
+                    return super.shouldOverrideUrlLoading(view, url);
+                }
             });
+
+            if (bridge.getWebView() != null) {
+                bridge.getWebView().addJavascriptInterface(new Object() {
+                    @android.webkit.JavascriptInterface
+                    public void openExternal(final String url) {
+                        if (url == null || url.trim().isEmpty()) return;
+                        runOnUiThread(() -> handleExternalUrl(Uri.parse(url.trim())));
+                    }
+                }, "AndroidNative");
+            }
         }
+    }
+
+    private boolean handleExternalUrl(Uri url) {
+        if (url == null) return false;
+        String scheme = url.getScheme();
+        String urlStr = url.toString();
+
+        if (scheme != null && (
+            scheme.equalsIgnoreCase("whatsapp") ||
+            scheme.equalsIgnoreCase("tg") ||
+            scheme.equalsIgnoreCase("intent") ||
+            urlStr.contains("wa.me") ||
+            urlStr.contains("api.whatsapp.com") ||
+            urlStr.contains("t.me")
+        )) {
+            try {
+                Intent intent;
+                if ("intent".equalsIgnoreCase(scheme)) {
+                    intent = Intent.parseUri(urlStr, Intent.URI_INTENT_SCHEME);
+                } else {
+                    intent = new Intent(Intent.ACTION_VIEW, url);
+                }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                return true;
+            } catch (Exception e) {
+                try {
+                    if ("whatsapp".equalsIgnoreCase(scheme)) {
+                        Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(urlStr.replace("whatsapp://send/", "https://api.whatsapp.com/send/")));
+                        browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(browserIntent);
+                        return true;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        return false;
     }
 }

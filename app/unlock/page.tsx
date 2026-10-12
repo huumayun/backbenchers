@@ -31,6 +31,8 @@ import {
   buildSmartWhatsAppUrl,
   buildSmartTelegramUrl,
   openExternalUrl,
+  getCleanWhatsAppNumber,
+  copyToClipboard,
 } from "@/lib/contactUtils";
 
 function UnlockPageContent() {
@@ -150,6 +152,20 @@ function UnlockPageContent() {
     }টি • মোট ফি: ৳${totalCost || unitPrice}\nআমার অ্যাকাউন্ট ইমেইল: ${userEmail}`;
 
     return buildSmartWhatsAppUrl(rawContact, msg);
+  };
+
+  const [copiedNumber, setCopiedNumber] = useState(false);
+  const whatsAppDisplayNumber = getCleanWhatsAppNumber(
+    settings?.whatsappNumber,
+    settings?.contactWhatsApp
+  );
+
+  const handleCopyWhatsAppNumber = async () => {
+    const success = await copyToClipboard(whatsAppDisplayNumber);
+    if (success) {
+      setCopiedNumber(true);
+      setTimeout(() => setCopiedNumber(false), 2000);
+    }
   };
 
   const handleRedeemCode = async (e: React.FormEvent) => {
@@ -698,6 +714,33 @@ function UnlockPageContent() {
                   </button>
                 )}
               </div>
+
+              {/* WhatsApp Quick Copy Box */}
+              {(settings?.contactChannel === "whatsapp" ||
+                settings?.contactChannel === "both" ||
+                !settings?.contactChannel) && whatsAppDisplayNumber && (
+                <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-50/90 border border-emerald-200/90 text-xs shadow-2xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 rounded-lg bg-[#25D366] text-white flex items-center justify-center shrink-0">
+                      <MessageCircle size={13} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[10px] text-zinc-500 font-medium leading-none mb-0.5">WhatsApp নম্বর</div>
+                      <div className="font-mono font-bold text-emerald-950 text-xs truncate">
+                        {whatsAppDisplayNumber}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyWhatsAppNumber}
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-2xs active:scale-95 transition cursor-pointer"
+                  >
+                    {copiedNumber ? <Check size={12} className="text-emerald-200" /> : <Copy size={12} />}
+                    <span>{copiedNumber ? "কপি হয়েছে!" : "নম্বর কপি করুন"}</span>
+                  </button>
+                </div>
+              )}
 
               <p className="text-[10px] text-center text-zinc-400 pt-0.5">
                 পেমেন্ট: বিকাশ / নগদ (Personal) • ৫ মিনিটে কোড ডেলিভারি

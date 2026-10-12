@@ -88,6 +88,17 @@ export function buildSmartTelegramUrl(rawInput: string, message: string = ""): s
 export function openExternalUrl(url: string) {
   if (!url || typeof window === "undefined") return;
 
+  // 1. Direct native Android JavascriptInterface bridge (guarantees no WebView navigation)
+  if (typeof (window as unknown as { AndroidNative?: { openExternal?: (u: string) => void } }).AndroidNative?.openExternal === "function") {
+    try {
+      (window as unknown as { AndroidNative: { openExternal: (u: string) => void } }).AndroidNative.openExternal(url);
+      return;
+    } catch (e) {
+      console.warn("AndroidNative.openExternal error:", e);
+    }
+  }
+
+  // 2. Native Capacitor window.open with _system intent
   const isNative = Boolean(
     (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } })
       .Capacitor?.isNativePlatform?.() ||
@@ -97,11 +108,59 @@ export function openExternalUrl(url: string) {
 
   if (isNative) {
     try {
-      window.location.href = url;
-    } catch {
       window.open(url, "_system");
+      return;
+    } catch {
+      // fallback
     }
-  } else {
-    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  // 3. Fallback for Web Browser
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+export function getCleanWhatsAppNumber(rawNumber?: string, rawUrl?: string): string {
+  if (rawNumber && rawNumber.trim()) {
+    return rawNumber.trim();
+  }
+
+  if (rawUrl && rawUrl.trim()) {
+    const trimmed = rawUrl.trim();
+    const match = trimmed.match(/(?:phone=|wa\.me\/)(\+?[0-9]+)/);
+    if (match && match[1]) {
+      return match[1];
+    }
+    return trimmed;
+  }
+
+  return "01768802953";
+}
+
+export async function copyToClipboard(text: string): Promise<boolean> {
+  if (!text || typeof window === "undefined") return false;
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fallback below
+  }
+
+  try {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-999999px";
+    textArea.style.top = "-999999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    const successful = document.execCommand("copy");
+    textArea.remove();
+    return successful;
+  } catch {
+    return false;
   }
 }

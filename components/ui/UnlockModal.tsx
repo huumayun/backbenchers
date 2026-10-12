@@ -15,11 +15,14 @@ import {
   EyeOff,
   Check,
   AlertTriangle,
+  Copy,
 } from "lucide-react";
 import {
   buildSmartWhatsAppUrl,
   buildSmartTelegramUrl,
   openExternalUrl,
+  getCleanWhatsAppNumber,
+  copyToClipboard,
 } from "@/lib/contactUtils";
 
 interface UnlockCardProps {
@@ -151,6 +154,20 @@ export function UnlockCard({
     }\nআমার অ্যাকাউন্ট ইমেইল: ${userLabel}`;
 
     return buildSmartWhatsAppUrl(rawContact, msg);
+  };
+
+  const [copiedNumber, setCopiedNumber] = useState(false);
+  const whatsAppDisplayNumber = getCleanWhatsAppNumber(
+    settings?.whatsappNumber,
+    settings?.contactWhatsApp
+  );
+
+  const handleCopyWhatsAppNumber = async () => {
+    const success = await copyToClipboard(whatsAppDisplayNumber);
+    if (success) {
+      setCopiedNumber(true);
+      setTimeout(() => setCopiedNumber(false), 2000);
+    }
   };
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -505,14 +522,25 @@ export function UnlockCard({
 
                   {(settings.contactChannel === "whatsapp" ||
                     settings.contactChannel === "both") && (
-                    <button
-                      type="button"
-                      onClick={() => openExternalUrl(buildWhatsAppPurchaseUrl())}
-                      className="bg-[#25D366] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0 cursor-pointer"
-                    >
-                      <MessageCircle size={12} />
-                      <span>WhatsApp</span>
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => openExternalUrl(buildWhatsAppPurchaseUrl())}
+                        className="bg-[#25D366] hover:opacity-90 text-white font-bold py-1.5 px-3 rounded-full flex items-center gap-1 text-[11px] transition shrink-0 cursor-pointer"
+                      >
+                        <MessageCircle size={12} />
+                        <span>WhatsApp</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCopyWhatsAppNumber}
+                        title="হোয়াটসঅ্যাপ নম্বর কপি করুন"
+                        className="bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold py-1.5 px-2.5 rounded-full flex items-center gap-1 text-[10px] transition shrink-0 cursor-pointer"
+                      >
+                        {copiedNumber ? <Check size={11} className="text-emerald-700" /> : <Copy size={11} />}
+                        <span>{copiedNumber ? "কপি হয়েছে!" : "নম্বর কপি"}</span>
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
