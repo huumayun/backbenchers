@@ -9,15 +9,29 @@ import {
   getDocs,
   deleteDoc,
   collection,
+  runTransaction,
 } from "firebase/firestore";
 import { BOOK_INFO, CHAPTERS } from "@/lib/book/chapters";
 
 export const ALL_SUBJECT_IDS: string[] = CHAPTERS.map((ch) => ch.id);
 export const SUBJECT_PRICE_BDT = 49;
 
+export interface CodeRedeemer {
+  uid: string;
+  email?: string | null;
+  deviceId?: string | null;
+  redeemedAt: string;
+}
+
 export interface UnlockCodeRecord {
   code: string;
   used: boolean;
+  disabled?: boolean;
+  maxUses?: number; // default 1
+  usedCount?: number; // default (used ? 1 : 0)
+  redeemers?: CodeRedeemer[];
+  accessDurationDays?: number | null; // null or 0 = permanent; >0 = timed days from redemption
+  expiresAt?: string | null; // optional "redeem by" expiry date for the code itself
   assignedSubjectIds?: string[];
   usedByUid?: string | null;
   usedByEmail?: string | null;
@@ -35,6 +49,26 @@ export interface UserSubjectAccessRecord {
   unlockCode: string;
   unlockDate: string;
   status: "active" | "revoked";
+  isPermanent?: boolean; // true = permanent, false = timed
+  expiresAt?: string | null; // ISO string if timed, null if permanent
+}
+
+export interface SubjectFreeWindow {
+  subjectId: string;
+  enabled: boolean;
+  isUnlimited: boolean;
+  durationDays?: number | null;
+  startAt: string; // ISO string (server timestamp)
+  endAt: string | null; // ISO string or null if unlimited
+  updatedAt: string;
+}
+
+export interface NoticeItem {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  important?: boolean;
 }
 
 export interface UserLoginSessionRecord {
@@ -83,6 +117,8 @@ export interface SiteSettings {
   contactTelegram: string;
   freePagesLimit: number;
   announcement: string;
+  freeSubjects?: Record<string, SubjectFreeWindow>;
+  notices?: NoticeItem[];
 }
 
 export interface UserReadingDataRecord {
@@ -143,6 +179,8 @@ const DEFAULT_SETTINGS: SiteSettings = {
   freePagesLimit: BOOK_INFO.freePagesLimit,
   announcement:
     "আপনার পছন্দের বিষয় সিলেক্ট করে মেসেজ পাঠিয়ে আনলক কোড সংগ্রহ করুন।",
+  freeSubjects: {},
+  notices: [],
 };
 
 // Global in-memory cache + concurrency lock for code redemption
@@ -169,6 +207,12 @@ function loadLocalStore(): LocalStoreData {
     if (!globalForStore.__ebookStore.sessions) {
       globalForStore.__ebookStore.sessions = {};
     }
+    if (!globalForStore.__ebookStore.settings.freeSubjects) {
+      globalForStore.__ebookStore.settings.freeSubjects = {};
+    }
+    if (!Array.isArray(globalForStore.__ebookStore.settings.notices)) {
+      globalForStore.__ebookStore.settings.notices = [];
+    }
     return globalForStore.__ebookStore;
   }
   try {
@@ -180,7 +224,12 @@ function loadLocalStore(): LocalStoreData {
         users: parsed.users || {},
         userReadingData: parsed.userReadingData || {},
         sessions: parsed.sessions || {},
-        settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
+        settings: {
+          ...DEFAULT_SETTINGS,
+          ...(parsed.settings || {}),
+          freeSubjects: parsed.settings?.freeSubjects || {},
+          notices: Array.isArray(parsed.settings?.notices) ? parsed.settings!.notices : [],
+        },
         adminPasswordHash: parsed.adminPasswordHash,
       };
       return globalForStore.__ebookStore;
@@ -195,6 +244,10 @@ function loadLocalStore(): LocalStoreData {
       "DEMO-2026": {
         code: "DEMO-2026",
         used: false,
+        maxUses: 1,
+        usedCount: 0,
+        redeemers: [],
+        accessDurationDays: null,
         assignedSubjectIds: ALL_SUBJECT_IDS,
         note: "টেস্ট কোড (সকল ৭টি বিষয়)",
         createdAt: new Date().toISOString(),
@@ -219,19 +272,150 @@ function saveLocalStore(data: LocalStoreData) {
   }
 }
 
-export function normalizeUnlockedSubjects(user?: Partial<UserAccountRecord> | null): string[] {
+export function getSubjectFreeWindowStatus(
+  win?: SubjectFreeWindow | null,
+  nowMs: number = Date.now()
+): {
+  status: "active" | "scheduled" | "expired" | "disabled";
+  isFree: boolean;
+  isUnlimited: boolean;
+  startAt?: string;
+  endAt?: string | null;
+} {
+  if (!win || !win.enabled) {
+    return { status: "disabled", isFree: false, isUnlimited: false };
+  }
+  const startMs = win.startAt ? Date.parse(win.startAt) : 0;
+  if (!isNaN(startMs) && startMs > nowMs) {
+    return {
+      status: "scheduled",
+      isFree: false,
+      isUnlimited: Boolean(win.isUnlimited),
+      startAt: win.startAt,
+      endAt: win.endAt,
+    };
+  }
+  if (win.isUnlimited || !win.endAt) {
+    return {
+      status: "active",
+      isFree: true,
+      isUnlimited: true,
+      startAt: win.startAt,
+      endAt: null,
+    };
+  }
+  const endMs = Date.parse(win.endAt);
+  if (!isNaN(endMs) && nowMs < endMs) {
+    return {
+      status: "active",
+      isFree: true,
+      isUnlimited: false,
+      startAt: win.startAt,
+      endAt: win.endAt,
+    };
+  }
+  return {
+    status: "expired",
+    isFree: false,
+    isUnlimited: false,
+    startAt: win.startAt,
+    endAt: win.endAt,
+  };
+}
+
+export function getGlobalFreeSubjectIds(
+  settings?: Partial<SiteSettings> | null,
+  nowMs: number = Date.now()
+): string[] {
+  if (!settings?.freeSubjects) return [];
+  return ALL_SUBJECT_IDS.filter((subId) => {
+    const win = settings.freeSubjects?.[subId];
+    return getSubjectFreeWindowStatus(win, nowMs).isFree;
+  });
+}
+
+export function getPermanentlyUnlockedSubjects(
+  user?: Partial<UserAccountRecord> | null
+): string[] {
   if (!user) return [];
   if (user.role === "admin") return [...ALL_SUBJECT_IDS];
-  if (Array.isArray(user.unlockedSubjects) && user.unlockedSubjects.length > 0) {
-    return Array.from(
-      new Set(user.unlockedSubjects.filter((id) => ALL_SUBJECT_IDS.includes(id)))
-    );
+
+  const baseList = Array.isArray(user.unlockedSubjects)
+    ? user.unlockedSubjects.filter((id) => ALL_SUBJECT_IDS.includes(id))
+    : user.hasAccess
+    ? [...ALL_SUBJECT_IDS]
+    : [];
+
+  const accessMap = user.subjectAccess || {};
+  const permanentSet = new Set<string>();
+
+  for (const subId of baseList) {
+    const rec = accessMap[subId];
+    if (!rec) {
+      // Legacy unlocked subject without subjectAccess record -> permanent
+      permanentSet.add(subId);
+    } else if (rec.status === "active" && (rec.isPermanent === true || !rec.expiresAt)) {
+      permanentSet.add(subId);
+    }
   }
-  // Legacy fallback: if user had hasAccess: true before per-subject update and no unlockedSubjects array yet
-  if (user.hasAccess && !Array.isArray(user.unlockedSubjects)) {
-    return [...ALL_SUBJECT_IDS];
+
+  for (const [subId, rec] of Object.entries(accessMap)) {
+    if (
+      ALL_SUBJECT_IDS.includes(subId) &&
+      rec &&
+      rec.status === "active" &&
+      (rec.isPermanent === true || !rec.expiresAt)
+    ) {
+      permanentSet.add(subId);
+    }
   }
-  return [];
+
+  return Array.from(permanentSet);
+}
+
+export function normalizeUnlockedSubjects(
+  user?: Partial<UserAccountRecord> | null,
+  nowMs: number = Date.now()
+): string[] {
+  if (!user) return [];
+  if (user.role === "admin") return [...ALL_SUBJECT_IDS];
+
+  const baseList = Array.isArray(user.unlockedSubjects)
+    ? user.unlockedSubjects.filter((id) => ALL_SUBJECT_IDS.includes(id))
+    : user.hasAccess && !Array.isArray(user.unlockedSubjects)
+    ? [...ALL_SUBJECT_IDS]
+    : [];
+
+  const accessMap = user.subjectAccess || {};
+  const activeSet = new Set<string>();
+
+  const candidates = new Set<string>([
+    ...baseList,
+    ...Object.keys(accessMap).filter((id) => ALL_SUBJECT_IDS.includes(id)),
+  ]);
+
+  for (const subId of candidates) {
+    const rec = accessMap[subId];
+    if (!rec) {
+      if (baseList.includes(subId)) {
+        activeSet.add(subId);
+      }
+      continue;
+    }
+    if (rec.status === "revoked") {
+      continue;
+    }
+    if (rec.isPermanent === true || !rec.expiresAt) {
+      activeSet.add(subId);
+      continue;
+    }
+    const expMs = Date.parse(rec.expiresAt);
+    if (!isNaN(expMs) && nowMs < expMs) {
+      activeSet.add(subId);
+    }
+  }
+
+  return Array.from(activeSet);
 }
 
 // ─── Signed Token Helpers (Access Token & Single-Active-Session Token) ─────────
@@ -511,6 +695,37 @@ export async function releaseOfflineBookLease(
   };
 }
 
+export function mergeSubjectAccessMaps(
+  mapA?: Record<string, UserSubjectAccessRecord> | null,
+  mapB?: Record<string, UserSubjectAccessRecord> | null
+): Record<string, UserSubjectAccessRecord> {
+  const result: Record<string, UserSubjectAccessRecord> = { ...(mapA || {}) };
+  if (!mapB) return result;
+
+  for (const [subId, recB] of Object.entries(mapB)) {
+    if (!recB) continue;
+    const recA = result[subId];
+    if (!recA) {
+      result[subId] = recB;
+      continue;
+    }
+    const aPerm = recA.status === "active" && (recA.isPermanent === true || !recA.expiresAt);
+    const bPerm = recB.status === "active" && (recB.isPermanent === true || !recB.expiresAt);
+    if (aPerm && !bPerm) {
+      result[subId] = { ...recB, ...recA, isPermanent: true, expiresAt: null, status: "active" };
+    } else if (bPerm && !aPerm) {
+      result[subId] = { ...recA, ...recB, isPermanent: true, expiresAt: null, status: "active" };
+    } else if (aPerm && bPerm) {
+      result[subId] = { ...recA, ...recB, isPermanent: true, expiresAt: null, status: "active" };
+    } else {
+      const expA = recA.expiresAt ? Date.parse(recA.expiresAt) : 0;
+      const expB = recB.expiresAt ? Date.parse(recB.expiresAt) : 0;
+      result[subId] = expB >= expA ? recB : recA;
+    }
+  }
+  return result;
+}
+
 export async function getUserAccountById(
   uid: string,
   email?: string | null
@@ -544,10 +759,15 @@ export async function getUserAccountById(
       const localUser = store.users[uid];
       const localReading = store.userReadingData[uid];
 
-      const mergedSubjects = Array.from(
+      const mergedSubjectAccess = mergeSubjectAccessMaps(
+        localUser?.subjectAccess,
+        cloudUser?.subjectAccess
+      );
+
+      const candidateSubjects = Array.from(
         new Set([
-          ...(localUser ? normalizeUnlockedSubjects(localUser) : []),
-          ...(cloudUser ? normalizeUnlockedSubjects(cloudUser) : []),
+          ...(localUser?.unlockedSubjects || []),
+          ...(cloudUser?.unlockedSubjects || []),
           ...(Array.isArray(readingData?.unlockedSubjects)
             ? readingData!.unlockedSubjects!.filter((id) =>
                 ALL_SUBJECT_IDS.includes(id)
@@ -561,8 +781,8 @@ export async function getUserAccountById(
         ])
       );
 
-      if (cloudUser || localUser || mergedSubjects.length > 0) {
-        user = {
+      if (cloudUser || localUser || candidateSubjects.length > 0) {
+        const mergedDraft: UserAccountRecord = {
           ...(localUser || {}),
           ...(cloudUser || {}),
           uid,
@@ -576,9 +796,9 @@ export async function getUserAccountById(
             cloudUser?.createdAt ||
             localUser?.createdAt ||
             new Date().toISOString(),
-          unlockedSubjects: mergedSubjects,
-          hasAccess:
-            mergedSubjects.length > 0 || Boolean(cloudUser?.hasAccess),
+          subjectAccess: mergedSubjectAccess,
+          unlockedSubjects: candidateSubjects,
+          hasAccess: false,
           activeSessionId:
             localUser?.activeSessionUpdatedAt &&
             cloudUser?.activeSessionUpdatedAt &&
@@ -596,6 +816,10 @@ export async function getUserAccountById(
                 localUser?.activeSessionToken ||
                 null,
         };
+        const activeUnlocked = normalizeUnlockedSubjects(mergedDraft);
+        mergedDraft.unlockedSubjects = activeUnlocked;
+        mergedDraft.hasAccess = activeUnlocked.length > 0;
+        user = mergedDraft;
         store.users[uid] = user;
         saveLocalStore(store);
       }
@@ -664,6 +888,69 @@ export async function verifyUserActiveSession(
 
 // ─── Code Operations (Hybrid Firestore + Local Fallback) ───────────────────────
 
+function normalizeCodeRecord(
+  data: UnlockCodeRecord,
+  fallback?: UnlockCodeRecord | null
+): UnlockCodeRecord {
+  const maxUses =
+    typeof data.maxUses === "number" && data.maxUses >= 1
+      ? data.maxUses
+      : typeof fallback?.maxUses === "number" && fallback.maxUses >= 1
+      ? fallback.maxUses
+      : 1;
+
+  const redeemers: CodeRedeemer[] = Array.isArray(data.redeemers)
+    ? data.redeemers
+    : Array.isArray(fallback?.redeemers)
+    ? fallback!.redeemers!
+    : data.used && data.usedByUid
+    ? [
+        {
+          uid: data.usedByUid,
+          email: data.usedByEmail || null,
+          deviceId: data.usedByDevice || null,
+          redeemedAt: data.usedAt || data.createdAt,
+        },
+      ]
+    : [];
+
+  const usedCount =
+    typeof data.usedCount === "number"
+      ? Math.max(data.usedCount, redeemers.length)
+      : Math.max(redeemers.length, data.used || fallback?.used ? 1 : 0);
+
+  const used = usedCount >= maxUses || Boolean(data.used && maxUses === 1);
+
+  return {
+    ...fallback,
+    ...data,
+    code: (data.code || fallback?.code || "").toUpperCase().trim(),
+    maxUses,
+    usedCount,
+    redeemers,
+    used,
+    disabled:
+      typeof data.disabled === "boolean"
+        ? data.disabled
+        : Boolean(fallback?.disabled),
+    accessDurationDays:
+      data.accessDurationDays !== undefined
+        ? data.accessDurationDays
+        : fallback?.accessDurationDays ?? null,
+    expiresAt:
+      data.expiresAt !== undefined
+        ? data.expiresAt
+        : fallback?.expiresAt ?? null,
+    assignedSubjectIds:
+      Array.isArray(data.assignedSubjectIds) && data.assignedSubjectIds.length > 0
+        ? data.assignedSubjectIds.filter((id) => ALL_SUBJECT_IDS.includes(id))
+        : Array.isArray(fallback?.assignedSubjectIds) &&
+          fallback!.assignedSubjectIds!.length > 0
+        ? fallback!.assignedSubjectIds!.filter((id) => ALL_SUBJECT_IDS.includes(id))
+        : ALL_SUBJECT_IDS,
+  };
+}
+
 export async function getCodeRecord(code: string): Promise<UnlockCodeRecord | null> {
   const normalized = code.toUpperCase().trim();
   const store = loadLocalStore();
@@ -673,19 +960,7 @@ export async function getCodeRecord(code: string): Promise<UnlockCodeRecord | nu
     if (snap.exists()) {
       const data = snap.data() as UnlockCodeRecord;
       const localRecord = store.codes[normalized];
-      // If either local or Firestore says used: true, preserve used: true
-      const merged: UnlockCodeRecord = {
-        ...data,
-        ...(localRecord?.used ? localRecord : {}),
-        used: Boolean(data.used || localRecord?.used),
-        assignedSubjectIds:
-          Array.isArray(data.assignedSubjectIds) && data.assignedSubjectIds.length > 0
-            ? data.assignedSubjectIds
-            : Array.isArray(localRecord?.assignedSubjectIds) &&
-              localRecord.assignedSubjectIds.length > 0
-            ? localRecord.assignedSubjectIds
-            : ALL_SUBJECT_IDS,
-      };
+      const merged = normalizeCodeRecord(data, localRecord);
       store.codes[normalized] = merged;
       saveLocalStore(store);
       return merged;
@@ -696,23 +971,16 @@ export async function getCodeRecord(code: string): Promise<UnlockCodeRecord | nu
 
   const local = store.codes[normalized];
   if (!local) return null;
-  if (!Array.isArray(local.assignedSubjectIds) || local.assignedSubjectIds.length === 0) {
-    local.assignedSubjectIds = ALL_SUBJECT_IDS;
-  }
-  return local;
+  return normalizeCodeRecord(local);
 }
 
 export async function saveCodeRecord(record: UnlockCodeRecord): Promise<void> {
   const normalized = record.code.toUpperCase().trim();
-  const normalizedRecord: UnlockCodeRecord = {
-    ...record,
-    code: normalized,
-    assignedSubjectIds:
-      Array.isArray(record.assignedSubjectIds) && record.assignedSubjectIds.length > 0
-        ? record.assignedSubjectIds.filter((id) => ALL_SUBJECT_IDS.includes(id))
-        : ALL_SUBJECT_IDS,
-  };
   const store = loadLocalStore();
+  const normalizedRecord = normalizeCodeRecord(
+    { ...record, code: normalized },
+    store.codes[normalized]
+  );
   store.codes[normalized] = normalizedRecord;
   saveLocalStore(store);
 
@@ -747,14 +1015,7 @@ export async function listAllCodes(): Promise<UnlockCodeRecord[]> {
       if (data.code) {
         const key = data.code.toUpperCase();
         const existing = store.codes[key];
-        store.codes[key] = {
-          ...data,
-          used: Boolean(data.used || existing?.used),
-          assignedSubjectIds:
-            Array.isArray(data.assignedSubjectIds) && data.assignedSubjectIds.length > 0
-              ? data.assignedSubjectIds
-              : existing?.assignedSubjectIds || ALL_SUBJECT_IDS,
-        };
+        store.codes[key] = normalizeCodeRecord(data, existing);
       }
     });
     saveLocalStore(store);
@@ -762,12 +1023,23 @@ export async function listAllCodes(): Promise<UnlockCodeRecord[]> {
     // Fallback to local store
   }
 
-  return Object.values(store.codes).sort(
-    (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-  );
+  return Object.values(store.codes)
+    .map((c) => normalizeCodeRecord(c))
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
 }
 
-// ─── Atomic Code Redemption & Permanent Subject Unlocking ──────────────────────
+// ─── Atomic Code Redemption & Subject Unlocking (Permanent or Timed) ───────────
+
+class CodeRedemptionError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 export async function redeemUnlockCodeForUser(params: {
   code: string;
@@ -781,8 +1053,14 @@ export async function redeemUnlockCodeForUser(params: {
   status: number;
   message: string;
   unlockedSubjects?: string[];
+  permanentlyUnlockedSubjects?: string[];
+  subjectAccess?: Record<string, UserSubjectAccessRecord>;
   newlyUnlockedSubjects?: string[];
   code?: string;
+  isPermanentUnlock?: boolean;
+  accessDurationDays?: number | null;
+  accessExpiresAt?: string | null;
+  serverTime?: string;
 }> {
   const normalizedCode = params.code.toUpperCase().trim();
   const locks = getRedeemingLocks();
@@ -797,53 +1075,113 @@ export async function redeemUnlockCodeForUser(params: {
 
   locks.add(normalizedCode);
   try {
-    const record = await getCodeRecord(normalizedCode);
-
-    if (!record) {
-      return {
-        success: false,
-        status: 404,
-        message: "❌ ভুল আনলক কোড! অনুগ্রহ করে সঠিক কোডটি লিখে আবার চেষ্টা করুন।",
-      };
-    }
-
-    if (record.used) {
-      return {
-        success: false,
-        status: 403,
-        message:
-          "⚠️ এই আনলক কোডটি ইতিমধ্যে ব্যবহৃত হয়েছে। প্রতিটি কোড শুধুমাত্র একবার ব্যবহারযোগ্য।",
-      };
-    }
-
-    const assignedSubjectIds =
-      Array.isArray(record.assignedSubjectIds) && record.assignedSubjectIds.length > 0
-        ? record.assignedSubjectIds.filter((id) => ALL_SUBJECT_IDS.includes(id))
-        : [...ALL_SUBJECT_IDS];
-
-    const now = new Date().toISOString();
-
-    // 1. Mark code as used immediately so it can never be reused
-    const updatedCodeRecord: UnlockCodeRecord = {
-      ...record,
-      code: normalizedCode,
-      used: true,
-      assignedSubjectIds,
-      usedByUid: params.uid,
-      usedByEmail: params.email || null,
-      usedByDevice: params.deviceId,
-      usedByIP: params.ip,
-      userAgent: params.userAgent,
-      usedAt: now,
-    };
-    await saveCodeRecord(updatedCodeRecord);
-
-    // 2. Load user record and merge newly unlocked subjects with existing unlockedSubjects
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
     const store = loadLocalStore();
-    let user = await getUserAccountById(params.uid, params.email);
 
-    if (!user) {
-      user = {
+    // Helper to evaluate and apply redemption on a given codeRecord + userRecord
+    const applyRedemption = (
+      rawRecord: UnlockCodeRecord | null,
+      existingUser: UserAccountRecord | null
+    ) => {
+      if (!rawRecord) {
+        throw new CodeRedemptionError(
+          "❌ ভুল আনলক কোড! অনুগ্রহ করে সঠিক কোডটি লিখে আবার চেষ্টা করুন।",
+          404
+        );
+      }
+
+      const record = normalizeCodeRecord(rawRecord, store.codes[normalizedCode]);
+
+      if (record.disabled) {
+        throw new CodeRedemptionError(
+          "🚫 এই আনলক কোডটি অ্যাডমিন কর্তৃক নিষ্ক্রিয় (Disabled) করা হয়েছে।",
+          403
+        );
+      }
+
+      if (record.expiresAt) {
+        const expMs = Date.parse(record.expiresAt);
+        if (!isNaN(expMs) && nowMs > expMs) {
+          throw new CodeRedemptionError(
+            "⏳ এই আনলক কোডটির ব্যবহারের মেয়াদ (Redeem Expiry) শেষ হয়ে গেছে।",
+            403
+          );
+        }
+      }
+
+      const maxUses = record.maxUses || 1;
+      const redeemers: CodeRedeemer[] = Array.isArray(record.redeemers)
+        ? [...record.redeemers]
+        : [];
+      const usedCount =
+        typeof record.usedCount === "number"
+          ? Math.max(record.usedCount, redeemers.length)
+          : redeemers.length;
+
+      const alreadyRedeemedByUser =
+        redeemers.some((r) => r.uid === params.uid) ||
+        (maxUses === 1 && record.used && record.usedByUid === params.uid) ||
+        Boolean(existingUser?.redeemedCodes?.includes(normalizedCode));
+
+      if (alreadyRedeemedByUser) {
+        throw new CodeRedemptionError(
+          "⚠️ আপনি ইতিমধ্যে এই আনলক কোডটি ব্যবহার করেছেন। একই কোড একজন ইউজার দুইবার ব্যবহার করতে পারবেন না।",
+          403
+        );
+      }
+
+      if (usedCount >= maxUses || (maxUses === 1 && record.used)) {
+        throw new CodeRedemptionError(
+          maxUses === 1
+            ? "⚠️ এই আনলক কোডটি ইতিমধ্যে ব্যবহৃত হয়েছে। প্রতিটি কোড শুধুমাত্র একবার ব্যবহারযোগ্য।"
+            : `⚠️ এই কোডটির ব্যবহারের সীমা (${maxUses} জন) পূর্ণ হয়ে গেছে।`,
+          403
+        );
+      }
+
+      const assignedSubjectIds =
+        Array.isArray(record.assignedSubjectIds) && record.assignedSubjectIds.length > 0
+          ? record.assignedSubjectIds.filter((id) => ALL_SUBJECT_IDS.includes(id))
+          : [...ALL_SUBJECT_IDS];
+
+      const durationDays =
+        typeof record.accessDurationDays === "number" && record.accessDurationDays > 0
+          ? record.accessDurationDays
+          : null;
+      const isCodePermanent = durationDays === null;
+      const codeAccessExpiresAt = isCodePermanent
+        ? null
+        : new Date(nowMs + durationDays * 24 * 60 * 60 * 1000).toISOString();
+
+      const newUsedCount = usedCount + 1;
+      const newRedeemers: CodeRedeemer[] = [
+        ...redeemers,
+        {
+          uid: params.uid,
+          email: params.email || existingUser?.email || null,
+          deviceId: params.deviceId,
+          redeemedAt: now,
+        },
+      ];
+
+      const updatedCodeRecord: UnlockCodeRecord = {
+        ...record,
+        code: normalizedCode,
+        maxUses,
+        usedCount: newUsedCount,
+        redeemers: newRedeemers,
+        used: newUsedCount >= maxUses,
+        assignedSubjectIds,
+        usedByUid: params.uid,
+        usedByEmail: params.email || existingUser?.email || null,
+        usedByDevice: params.deviceId,
+        usedByIP: params.ip,
+        userAgent: params.userAgent,
+        usedAt: now,
+      };
+
+      const baseUser: UserAccountRecord = existingUser || {
         uid: params.uid,
         email: (params.email || "").toLowerCase().trim(),
         displayName: (params.email || "পাঠক").split("@")[0],
@@ -855,106 +1193,252 @@ export async function redeemUnlockCodeForUser(params: {
         role: "reader",
         createdAt: now,
       };
-    }
 
-    const existingSubjects = normalizeUnlockedSubjects(user);
-    const mergedSubjects = Array.from(
-      new Set([...existingSubjects, ...assignedSubjectIds])
-    );
-    const newlyUnlocked = assignedSubjectIds.filter(
-      (id) => !existingSubjects.includes(id)
-    );
+      const prevActiveSubjects = normalizeUnlockedSubjects(baseUser, nowMs);
+      const prevPermanentSubjects = getPermanentlyUnlockedSubjects(baseUser);
 
-    const existingCodes = Array.isArray(user.redeemedCodes)
-      ? user.redeemedCodes
-      : user.unlockCode
-      ? [user.unlockCode]
-      : [];
-    const mergedCodes = Array.from(new Set([...existingCodes, normalizedCode]));
-
-    const subjectAccessMap: Record<string, UserSubjectAccessRecord> = {
-      ...(user.subjectAccess || {}),
-    };
-    for (const subId of assignedSubjectIds) {
-      subjectAccessMap[subId] = {
-        userId: params.uid,
-        subjectId: subId,
-        unlockCode: normalizedCode,
-        unlockDate: now,
-        status: "active",
+      const subjectAccessMap: Record<string, UserSubjectAccessRecord> = {
+        ...(baseUser.subjectAccess || {}),
       };
-    }
 
-    const updatedUser: UserAccountRecord = {
-      ...user,
-      hasAccess: mergedSubjects.length > 0,
-      unlockedSubjects: mergedSubjects,
-      redeemedCodes: mergedCodes,
-      subjectAccess: subjectAccessMap,
-      unlockCode: normalizedCode,
-      boundDeviceId: params.deviceId,
+      // Ensure legacy permanent subjects are preserved in subjectAccessMap
+      for (const permId of prevPermanentSubjects) {
+        if (!subjectAccessMap[permId]) {
+          subjectAccessMap[permId] = {
+            userId: params.uid,
+            subjectId: permId,
+            unlockCode: baseUser.unlockCode || "LEGACY",
+            unlockDate: baseUser.createdAt || now,
+            status: "active",
+            isPermanent: true,
+            expiresAt: null,
+          };
+        }
+      }
+
+      for (const subId of assignedSubjectIds) {
+        const prevRec = subjectAccessMap[subId];
+        const wasAlreadyPermanent =
+          prevPermanentSubjects.includes(subId) ||
+          Boolean(
+            prevRec &&
+              prevRec.status === "active" &&
+              (prevRec.isPermanent === true || !prevRec.expiresAt)
+          );
+
+        // Rule: permanent access ALWAYS beats timed access. Never downgrade permanent access.
+        if (isCodePermanent || wasAlreadyPermanent) {
+          subjectAccessMap[subId] = {
+            userId: params.uid,
+            subjectId: subId,
+            unlockCode: normalizedCode,
+            unlockDate: now,
+            status: "active",
+            isPermanent: true,
+            expiresAt: null,
+          };
+        } else {
+          const prevExpMs =
+            prevRec?.status === "active" && prevRec.expiresAt
+              ? Date.parse(prevRec.expiresAt)
+              : 0;
+          const nextExpMs = Date.parse(codeAccessExpiresAt!);
+          const bestExpiresAt =
+            !isNaN(prevExpMs) && prevExpMs > nextExpMs
+              ? prevRec!.expiresAt!
+              : codeAccessExpiresAt!;
+
+          subjectAccessMap[subId] = {
+            userId: params.uid,
+            subjectId: subId,
+            unlockCode: normalizedCode,
+            unlockDate: now,
+            status: "active",
+            isPermanent: false,
+            expiresAt: bestExpiresAt,
+          };
+        }
+      }
+
+      const existingCodes = Array.isArray(baseUser.redeemedCodes)
+        ? baseUser.redeemedCodes
+        : baseUser.unlockCode
+        ? [baseUser.unlockCode]
+        : [];
+      const mergedCodes = Array.from(new Set([...existingCodes, normalizedCode]));
+
+      const candidateUnlocked = Array.from(
+        new Set([...prevActiveSubjects, ...assignedSubjectIds])
+      );
+
+      const updatedUserDraft: UserAccountRecord = {
+        ...baseUser,
+        hasAccess: true,
+        unlockedSubjects: candidateUnlocked,
+        redeemedCodes: mergedCodes,
+        subjectAccess: subjectAccessMap,
+        unlockCode: normalizedCode,
+        boundDeviceId: params.deviceId,
+      };
+
+      const activeUnlocked = normalizeUnlockedSubjects(updatedUserDraft, nowMs);
+      const permanentUnlocked = getPermanentlyUnlockedSubjects(updatedUserDraft);
+      updatedUserDraft.unlockedSubjects = activeUnlocked;
+      updatedUserDraft.hasAccess = activeUnlocked.length > 0;
+
+      const newlyUnlocked = assignedSubjectIds.filter(
+        (id) => !prevActiveSubjects.includes(id)
+      );
+
+      return {
+        updatedCodeRecord,
+        updatedUser: updatedUserDraft,
+        activeUnlocked,
+        permanentUnlocked,
+        newlyUnlocked:
+          newlyUnlocked.length > 0 ? newlyUnlocked : assignedSubjectIds,
+        assignedSubjectIds,
+        isCodePermanent,
+        durationDays,
+        codeAccessExpiresAt,
+      };
     };
 
-    store.users[params.uid] = updatedUser;
-    if (store.userReadingData[params.uid]) {
-      store.userReadingData[params.uid].unlockedSubjects = mergedSubjects;
-      store.userReadingData[params.uid].redeemedCodes = mergedCodes;
-    }
-    saveLocalStore(store);
+    let txResult: ReturnType<typeof applyRedemption> | null = null;
 
-    // 3. Persist permanent subject access to Firestore (users/{uid} and user_reading_data/{uid})
+    // 1. Attempt atomic Firestore transaction first
     try {
-      await Promise.all([
-        setDoc(
-          doc(db, "users", params.uid),
+      txResult = await runTransaction(db, async (transaction) => {
+        const codeRef = doc(db, "unlock_codes", normalizedCode);
+        const userRef = doc(db, "users", params.uid);
+        const readingRef = doc(db, "user_reading_data", params.uid);
+
+        const [codeSnap, userSnap] = await Promise.all([
+          transaction.get(codeRef),
+          transaction.get(userRef),
+        ]);
+
+        const rawCode = codeSnap.exists()
+          ? (codeSnap.data() as UnlockCodeRecord)
+          : store.codes[normalizedCode] || null;
+
+        const localUser = store.users[params.uid] || null;
+        const cloudUser = userSnap.exists()
+          ? (userSnap.data() as UserAccountRecord)
+          : null;
+
+        const mergedExistingUser: UserAccountRecord | null =
+          cloudUser || localUser
+            ? ({
+                ...(localUser || {}),
+                ...(cloudUser || {}),
+                uid: params.uid,
+                subjectAccess: mergeSubjectAccessMaps(
+                  localUser?.subjectAccess,
+                  cloudUser?.subjectAccess
+                ),
+              } as UserAccountRecord)
+            : null;
+
+        const computed = applyRedemption(rawCode, mergedExistingUser);
+
+        transaction.set(codeRef, computed.updatedCodeRecord, { merge: true });
+        transaction.set(
+          userRef,
           {
             uid: params.uid,
-            email: updatedUser.email,
-            displayName: updatedUser.displayName,
-            hasAccess: mergedSubjects.length > 0,
-            unlockedSubjects: mergedSubjects,
-            redeemedCodes: mergedCodes,
-            subjectAccess: subjectAccessMap,
+            email: computed.updatedUser.email,
+            displayName: computed.updatedUser.displayName,
+            hasAccess: computed.updatedUser.hasAccess,
+            unlockedSubjects: computed.activeUnlocked,
+            redeemedCodes: computed.updatedUser.redeemedCodes,
+            subjectAccess: computed.updatedUser.subjectAccess,
             unlockCode: normalizedCode,
             unlockedAt: now,
           },
           { merge: true }
-        ),
-        setDoc(
-          doc(db, "user_reading_data", params.uid),
+        );
+        transaction.set(
+          readingRef,
           {
             uid: params.uid,
-            unlockedSubjects: mergedSubjects,
-            redeemedCodes: mergedCodes,
+            unlockedSubjects: computed.permanentUnlocked,
+            redeemedCodes: computed.updatedUser.redeemedCodes,
             updatedAt: now,
           },
           { merge: true }
-        ),
-      ]);
-    } catch {
-      // Local store backup already saved
+        );
+
+        return computed;
+      });
+    } catch (err) {
+      if (err instanceof CodeRedemptionError) {
+        return {
+          success: false,
+          status: err.status,
+          message: err.message,
+          serverTime: now,
+        };
+      }
+      // Firestore network/offline fallback to local store
+      const fallbackCode = await getCodeRecord(normalizedCode);
+      const fallbackUser = await getUserAccountById(params.uid, params.email);
+      try {
+        txResult = applyRedemption(fallbackCode, fallbackUser);
+      } catch (innerErr) {
+        if (innerErr instanceof CodeRedemptionError) {
+          return {
+            success: false,
+            status: innerErr.status,
+            message: innerErr.message,
+            serverTime: now,
+          };
+        }
+        throw innerErr;
+      }
     }
 
+    // 2. Sync with local store backup
+    store.codes[normalizedCode] = txResult.updatedCodeRecord;
+    store.users[params.uid] = txResult.updatedUser;
+    if (store.userReadingData[params.uid]) {
+      store.userReadingData[params.uid].unlockedSubjects =
+        txResult.permanentUnlocked;
+      store.userReadingData[params.uid].redeemedCodes =
+        txResult.updatedUser.redeemedCodes;
+    }
+    saveLocalStore(store);
+
     const unlockedNames = CHAPTERS.filter((ch) =>
-      assignedSubjectIds.includes(ch.id)
+      txResult!.assignedSubjectIds.includes(ch.id)
     )
       .map((ch) => `বই ${ch.bookNumber} (${ch.courseCode})`)
       .join(", ");
 
+    const durationSuffix = txResult.isCodePermanent
+      ? " (স্থায়ী অ্যাক্সেস)"
+      : ` (${txResult.durationDays} দিনের জন্য)`;
+
     return {
       success: true,
       status: 200,
-      message: `🎉 সফলভাবে আনলক হয়েছে: ${unlockedNames}!`,
-      unlockedSubjects: mergedSubjects,
-      newlyUnlockedSubjects: newlyUnlocked.length > 0 ? newlyUnlocked : assignedSubjectIds,
+      message: `🎉 সফলভাবে আনলক হয়েছে: ${unlockedNames}${durationSuffix}!`,
+      unlockedSubjects: txResult.activeUnlocked,
+      permanentlyUnlockedSubjects: txResult.permanentUnlocked,
+      subjectAccess: txResult.updatedUser.subjectAccess,
+      newlyUnlockedSubjects: txResult.newlyUnlocked,
       code: normalizedCode,
+      isPermanentUnlock: txResult.isCodePermanent,
+      accessDurationDays: txResult.durationDays,
+      accessExpiresAt: txResult.codeAccessExpiresAt,
+      serverTime: now,
     };
   } finally {
     locks.delete(normalizedCode);
   }
 }
 
-// ─── Site Settings (Price, WhatsApp, Telegram, bKash/Nagad) ───────────────────
+// ─── Site Settings (Price, WhatsApp, Telegram, Free Windows, Notices) ─────────
 
 export async function getSiteSettings(): Promise<SiteSettings> {
   const store = loadLocalStore();
@@ -962,7 +1446,18 @@ export async function getSiteSettings(): Promise<SiteSettings> {
     const snap = await getDoc(doc(db, "settings", "site"));
     if (snap.exists()) {
       const data = snap.data() as Partial<SiteSettings>;
-      store.settings = { ...DEFAULT_SETTINGS, ...store.settings, ...data };
+      store.settings = {
+        ...DEFAULT_SETTINGS,
+        ...store.settings,
+        ...data,
+        freeSubjects: {
+          ...(store.settings.freeSubjects || {}),
+          ...(data.freeSubjects || {}),
+        },
+        notices: Array.isArray(data.notices)
+          ? data.notices
+          : store.settings.notices || [],
+      };
       saveLocalStore(store);
     }
   } catch {
@@ -973,7 +1468,16 @@ export async function getSiteSettings(): Promise<SiteSettings> {
 
 export async function updateSiteSettings(newSettings: Partial<SiteSettings>): Promise<SiteSettings> {
   const store = loadLocalStore();
-  store.settings = { ...store.settings, ...newSettings };
+  store.settings = {
+    ...store.settings,
+    ...newSettings,
+    freeSubjects: newSettings.freeSubjects !== undefined
+      ? newSettings.freeSubjects
+      : store.settings.freeSubjects || {},
+    notices: newSettings.notices !== undefined
+      ? newSettings.notices
+      : store.settings.notices || [],
+  };
   saveLocalStore(store);
 
   try {

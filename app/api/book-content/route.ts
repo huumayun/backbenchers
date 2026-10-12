@@ -1,12 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getParsedBook, searchBookPages, BookToc } from "@/lib/book/server-parser";
-import { verifyUserActiveSession } from "@/lib/server/store";
+import {
+  verifyUserActiveSession,
+  getSiteSettings,
+  getGlobalFreeSubjectIds,
+  getPermanentlyUnlockedSubjects,
+} from "@/lib/server/store";
 import { CHAPTERS } from "@/lib/book/chapters";
 
 async function getRequestAccessInfo(req: NextRequest): Promise<{
   sessionInvalidated: boolean;
   unlockedSubjects: string[];
+  permanentlyUnlockedSubjects: string[];
+  globalFreeSubjects: string[];
+  serverTime: string;
 }> {
+  const nowMs = Date.now();
+  const serverTime = new Date(nowMs).toISOString();
+  const settings = await getSiteSettings();
+  const globalFreeSubjects = getGlobalFreeSubjectIds(settings, nowMs);
+
   const uid =
     req.headers.get("x-user-uid") ||
     req.cookies.get("ebook_uid")?.value ||
@@ -25,24 +38,52 @@ async function getRequestAccessInfo(req: NextRequest): Promise<{
     .filter((id) => validSubjectIds.has(id));
 
   if (!uid || !sessionToken) {
-    return { sessionInvalidated: false, unlockedSubjects: [] };
+    return {
+      sessionInvalidated: false,
+      unlockedSubjects: globalFreeSubjects,
+      permanentlyUnlockedSubjects: [],
+      globalFreeSubjects,
+      serverTime,
+    };
   }
 
   const check = await verifyUserActiveSession(uid, sessionToken);
   if (!check.valid) {
     return {
       sessionInvalidated: Boolean(check.sessionInvalidated),
-      unlockedSubjects: [],
+      unlockedSubjects: globalFreeSubjects,
+      permanentlyUnlockedSubjects: [],
+      globalFreeSubjects,
+      serverTime,
     };
   }
 
+  const subjectAccess = check.user?.subjectAccess || {};
+  const nonExpiredClientUnlocked = clientUnlocked.filter((id) => {
+    const rec = subjectAccess[id];
+    if (!rec) return true;
+    if (rec.status === "revoked") return false;
+    if (rec.isPermanent === true || !rec.expiresAt) return true;
+    const expMs = Date.parse(rec.expiresAt);
+    return !isNaN(expMs) && nowMs < expMs;
+  });
+
+  const permanentlyUnlockedSubjects = getPermanentlyUnlockedSubjects(check.user);
+
   const mergedUnlocked = Array.from(
-    new Set([...check.unlockedSubjects, ...clientUnlocked])
+    new Set([
+      ...check.unlockedSubjects,
+      ...nonExpiredClientUnlocked,
+      ...globalFreeSubjects,
+    ])
   );
 
   return {
     sessionInvalidated: false,
     unlockedSubjects: mergedUnlocked,
+    permanentlyUnlockedSubjects,
+    globalFreeSubjects,
+    serverTime,
   };
 }
 
@@ -123,8 +164,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ css, pages, tocs });
     }
 
-    const { sessionInvalidated, unlockedSubjects } =
-      await getRequestAccessInfo(req);
+    const {
+      sessionInvalidated,
+      unlockedSubjects,
+      permanentlyUnlockedSubjects,
+      globalFreeSubjects,
+      serverTime,
+    } = await getRequestAccessInfo(req);
 
     // 1. Search mode across all 7 books (only returns results from free pages or unlocked subjects)
     if (search !== null) {
@@ -145,7 +191,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         results: filteredResults,
         unlockedSubjects,
+        permanentlyUnlockedSubjects,
+        globalFreeSubjects,
         sessionInvalidated,
+        serverTime,
       });
     }
 
@@ -203,7 +252,10 @@ export async function GET(req: NextRequest) {
         hasAccess: isSubjectUnlocked,
         isSubjectUnlocked,
         unlockedSubjects,
+        permanentlyUnlockedSubjects,
+        globalFreeSubjects,
         sessionInvalidated,
+        serverTime,
         pages: flipPages,
       });
     }
@@ -219,7 +271,10 @@ export async function GET(req: NextRequest) {
       hasAccess: isSubjectUnlocked,
       isSubjectUnlocked,
       unlockedSubjects,
+      permanentlyUnlockedSubjects,
+      globalFreeSubjects,
       sessionInvalidated,
+      serverTime,
       freePagesLimit: bookMeta.freePagesUpTo,
       totalChapterPages: bookPages.length,
       unlockedChapterPages: allowedPages.length,

@@ -4,13 +4,31 @@ import { db } from "@/lib/firebase/config";
 import {
   doc,
   getDoc,
+  getDocFromServer,
   setDoc,
   getDocs,
   deleteDoc,
   collection,
+  runTransaction,
 } from "firebase/firestore";
 import { BOOK_INFO, CHAPTERS } from "@/lib/book/chapters";
+import { isDeviceOnline } from "@/lib/offline/offlineStore";
 import type { ParsedBookPage, BookToc } from "@/lib/book/server-parser";
+import type {
+  SubjectFreeWindow,
+  UserSubjectAccessRecord,
+  CodeRedeemer,
+  NoticeItem,
+} from "@/lib/server/store";
+
+function withTimeout<T>(promise: Promise<T>, ms = 3500): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("Network offline")), ms)
+    ),
+  ]);
+}
 
 const ALL_SUBJECT_IDS = CHAPTERS.map((ch) => ch.id);
 const SUBJECT_PRICE_BDT = 49;
@@ -122,45 +140,166 @@ function parseSessionTokenAny(token?: string | null): {
   }
 }
 
-function normalizeUnlocked(user?: Record<string, unknown> | null): string[] {
+function getGlobalFreeSubjectsFromSettings(
+  settings?: Record<string, unknown> | null,
+  nowMs: number = Date.now()
+): string[] {
+  const freeMap = (settings?.freeSubjects || {}) as Record<
+    string,
+    SubjectFreeWindow
+  >;
+  return ALL_SUBJECT_IDS.filter((subId) => {
+    const win = freeMap[subId];
+    if (!win || !win.enabled) return false;
+    const startMs = win.startAt ? Date.parse(win.startAt) : 0;
+    if (!isNaN(startMs) && startMs > nowMs) return false;
+    if (win.isUnlimited || !win.endAt) return true;
+    const endMs = Date.parse(win.endAt);
+    return !isNaN(endMs) && nowMs < endMs;
+  });
+}
+
+function getPermanentlyUnlocked(
+  user?: Record<string, unknown> | null
+): string[] {
   if (!user) return [];
   if (user.role === "admin") return [...ALL_SUBJECT_IDS];
-  if (Array.isArray(user.unlockedSubjects) && user.unlockedSubjects.length > 0) {
-    return Array.from(
-      new Set(
-        (user.unlockedSubjects as string[]).filter((id) =>
-          ALL_SUBJECT_IDS.includes(id)
-        )
+
+  const baseList = Array.isArray(user.unlockedSubjects)
+    ? (user.unlockedSubjects as string[]).filter((id) =>
+        ALL_SUBJECT_IDS.includes(id)
       )
-    );
+    : user.hasAccess
+    ? [...ALL_SUBJECT_IDS]
+    : [];
+
+  const accessMap = (user.subjectAccess || {}) as Record<
+    string,
+    UserSubjectAccessRecord
+  >;
+  const permanentSet = new Set<string>();
+
+  for (const subId of baseList) {
+    const rec = accessMap[subId];
+    if (!rec) {
+      permanentSet.add(subId);
+    } else if (
+      rec.status === "active" &&
+      (rec.isPermanent === true || !rec.expiresAt)
+    ) {
+      permanentSet.add(subId);
+    }
   }
-  if (user.hasAccess && !Array.isArray(user.unlockedSubjects)) {
-    return [...ALL_SUBJECT_IDS];
+
+  for (const [subId, rec] of Object.entries(accessMap)) {
+    if (
+      ALL_SUBJECT_IDS.includes(subId) &&
+      rec &&
+      rec.status === "active" &&
+      (rec.isPermanent === true || !rec.expiresAt)
+    ) {
+      permanentSet.add(subId);
+    }
   }
-  return [];
+
+  return Array.from(permanentSet);
+}
+
+function normalizeUnlocked(
+  user?: Record<string, unknown> | null,
+  nowMs: number = Date.now()
+): string[] {
+  if (!user) return [];
+  if (user.role === "admin") return [...ALL_SUBJECT_IDS];
+
+  const baseList = Array.isArray(user.unlockedSubjects)
+    ? (user.unlockedSubjects as string[]).filter((id) =>
+        ALL_SUBJECT_IDS.includes(id)
+      )
+    : user.hasAccess && !Array.isArray(user.unlockedSubjects)
+    ? [...ALL_SUBJECT_IDS]
+    : [];
+
+  const accessMap = (user.subjectAccess || {}) as Record<
+    string,
+    UserSubjectAccessRecord
+  >;
+  const activeSet = new Set<string>();
+
+  const candidates = new Set<string>([
+    ...baseList,
+    ...Object.keys(accessMap).filter((id) => ALL_SUBJECT_IDS.includes(id)),
+  ]);
+
+  for (const subId of candidates) {
+    const rec = accessMap[subId];
+    if (!rec) {
+      if (baseList.includes(subId)) {
+        activeSet.add(subId);
+      }
+      continue;
+    }
+    if (rec.status === "revoked") continue;
+    if (rec.isPermanent === true || !rec.expiresAt) {
+      activeSet.add(subId);
+      continue;
+    }
+    const expMs = Date.parse(rec.expiresAt);
+    if (!isNaN(expMs) && nowMs < expMs) {
+      activeSet.add(subId);
+    }
+  }
+
+  return Array.from(activeSet);
 }
 
 async function verifySessionInFirestore(
   uid?: string | null,
-  sessionToken?: string | null
+  sessionToken?: string | null,
+  requireLiveServer = false
 ): Promise<{
   valid: boolean;
   sessionInvalidated?: boolean;
   unlockedSubjects: string[];
+  permanentlyUnlockedSubjects: string[];
+  subjectAccess: Record<string, UserSubjectAccessRecord>;
   user?: Record<string, unknown> | null;
 }> {
+  if (!isDeviceOnline()) {
+    throw new Error("Network offline");
+  }
   if (!uid || !sessionToken) {
-    return { valid: false, unlockedSubjects: [] };
+    return {
+      valid: false,
+      unlockedSubjects: [],
+      permanentlyUnlockedSubjects: [],
+      subjectAccess: {},
+    };
   }
   const parsed = parseSessionTokenAny(sessionToken);
   if (!parsed.valid || parsed.uid !== uid || !parsed.sessionId) {
-    return { valid: false, sessionInvalidated: true, unlockedSubjects: [] };
+    return {
+      valid: false,
+      sessionInvalidated: true,
+      unlockedSubjects: [],
+      permanentlyUnlockedSubjects: [],
+      subjectAccess: {},
+    };
   }
 
   try {
-    const snap = await getDoc(doc(db, "users", uid));
+    const snap = await withTimeout(
+      getDocFromServer(doc(db, "users", uid)),
+      3500
+    );
     if (!snap.exists()) {
-      return { valid: true, unlockedSubjects: [], user: null };
+      return {
+        valid: true,
+        unlockedSubjects: [],
+        permanentlyUnlockedSubjects: [],
+        subjectAccess: {},
+        user: null,
+      };
     }
     const userData = snap.data() as Record<string, unknown>;
     const activeSessionId = (userData.activeSessionId as string) || null;
@@ -169,31 +308,53 @@ async function verifySessionInFirestore(
         valid: false,
         sessionInvalidated: true,
         unlockedSubjects: [],
+        permanentlyUnlockedSubjects: [],
+        subjectAccess: {},
       };
     }
-    const unlockedSubjects = normalizeUnlocked(userData);
+    const nowMs = Date.now();
+    const unlockedSubjects = normalizeUnlocked(userData, nowMs);
+    const permanentlyUnlockedSubjects = getPermanentlyUnlocked(userData);
+    const subjectAccess = ((userData.subjectAccess || {}) as Record<
+      string,
+      UserSubjectAccessRecord
+    >);
     return {
       valid: true,
       unlockedSubjects,
+      permanentlyUnlockedSubjects,
+      subjectAccess,
       user: {
         ...userData,
         uid,
         unlockedSubjects,
+        subjectAccess,
         hasAccess: unlockedSubjects.length > 0,
       },
     };
   } catch {
+    if (requireLiveServer) {
+      throw new Error("Network offline");
+    }
     // Fallback to cached local profile if Firestore read fails momentarily
     try {
       const localUnlocked = JSON.parse(
         localStorage.getItem("ebook_unlocked_subjects") || "[]"
       );
+      const list = Array.isArray(localUnlocked) ? localUnlocked : [];
       return {
         valid: true,
-        unlockedSubjects: Array.isArray(localUnlocked) ? localUnlocked : [],
+        unlockedSubjects: list,
+        permanentlyUnlockedSubjects: list,
+        subjectAccess: {},
       };
     } catch {
-      return { valid: true, unlockedSubjects: [] };
+      return {
+        valid: true,
+        unlockedSubjects: [],
+        permanentlyUnlockedSubjects: [],
+        subjectAccess: {},
+      };
     }
   }
 }
@@ -283,7 +444,7 @@ async function handleLocalApiRequest(
   init?: RequestInit
 ): Promise<Response> {
   // Strictly require online connectivity for API calls so offline vault rules apply when offline
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
+  if (!isDeviceOnline()) {
     throw new Error("Network offline");
   }
 
@@ -292,6 +453,13 @@ async function handleLocalApiRequest(
   const headerUid = extractHeader(init, "x-user-uid");
   const headerToken = extractHeader(init, "x-session-token");
   const headerDevice = extractHeader(init, "x-device-id");
+  const headerUnlockedRaw = extractHeader(init, "x-unlocked-subjects");
+  const clientUnlocked = headerUnlockedRaw
+    ? headerUnlockedRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((id) => ALL_SUBJECT_IDS.includes(id))
+    : [];
 
   const storedProfileRaw =
     typeof localStorage !== "undefined"
@@ -319,12 +487,66 @@ async function handleLocalApiRequest(
     const sessionToken =
       urlObj.searchParams.get("sessionToken") || headerToken || storedToken;
 
-    const sessionCheck =
-      uid && sessionToken
-        ? await verifySessionInFirestore(uid, sessionToken)
-        : { valid: false, sessionInvalidated: false, unlockedSubjects: [] };
+    const nowMs = Date.now();
+    const serverTime = new Date(nowMs).toISOString();
 
-    const unlockedSubjects = sessionCheck.unlockedSubjects;
+    let sessionCheck = {
+      valid: false,
+      sessionInvalidated: false,
+      unlockedSubjects: [] as string[],
+      permanentlyUnlockedSubjects: [] as string[],
+      subjectAccess: {} as Record<string, UserSubjectAccessRecord>,
+    };
+
+    const settingsSnapPromise = withTimeout(
+      getDocFromServer(doc(db, "settings", "site")),
+      3500
+    );
+
+    if (uid && sessionToken) {
+      const [sCheck] = await Promise.all([
+        verifySessionInFirestore(uid, sessionToken, true),
+        settingsSnapPromise.catch(() => null),
+      ]);
+      sessionCheck = {
+        valid: sCheck.valid,
+        sessionInvalidated: Boolean(sCheck.sessionInvalidated),
+        unlockedSubjects: sCheck.unlockedSubjects,
+        permanentlyUnlockedSubjects: sCheck.permanentlyUnlockedSubjects,
+        subjectAccess: sCheck.subjectAccess,
+      };
+    }
+
+    const settingsSnap = await settingsSnapPromise;
+    const settingsData = settingsSnap.exists()
+      ? (settingsSnap.data() as Record<string, unknown>)
+      : {};
+    const globalFreeSubjects = getGlobalFreeSubjectsFromSettings(
+      settingsData,
+      nowMs
+    );
+
+    const nonExpiredClientUnlocked = clientUnlocked.filter((id) => {
+      const rec = sessionCheck.subjectAccess[id];
+      if (!rec) return true;
+      if (rec.status === "revoked") return false;
+      if (rec.isPermanent === true || !rec.expiresAt) return true;
+      const expMs = Date.parse(rec.expiresAt);
+      return !isNaN(expMs) && nowMs < expMs;
+    });
+
+    const unlockedSubjects = sessionCheck.valid
+      ? Array.from(
+          new Set([
+            ...sessionCheck.unlockedSubjects,
+            ...nonExpiredClientUnlocked,
+            ...globalFreeSubjects,
+          ])
+        )
+      : [...globalFreeSubjects];
+    const permanentlyUnlockedSubjects = sessionCheck.valid
+      ? sessionCheck.permanentlyUnlockedSubjects
+      : [];
     const sessionInvalidated = Boolean(sessionCheck.sessionInvalidated);
 
     const { css, pages, tocs } = await loadBundledBook();
@@ -335,7 +557,10 @@ async function handleLocalApiRequest(
         return jsonResponse({
           results: [],
           unlockedSubjects,
+          permanentlyUnlockedSubjects,
+          globalFreeSubjects,
           sessionInvalidated,
+          serverTime,
         });
       }
       const results: Array<{
@@ -375,7 +600,10 @@ async function handleLocalApiRequest(
       return jsonResponse({
         results,
         unlockedSubjects,
+        permanentlyUnlockedSubjects,
+        globalFreeSubjects,
         sessionInvalidated,
+        serverTime,
       });
     }
 
@@ -427,7 +655,10 @@ async function handleLocalApiRequest(
         hasAccess: isSubjectUnlocked,
         isSubjectUnlocked,
         unlockedSubjects,
+        permanentlyUnlockedSubjects,
+        globalFreeSubjects,
         sessionInvalidated,
+        serverTime,
         pages: flipPages,
       });
     }
@@ -444,7 +675,10 @@ async function handleLocalApiRequest(
       hasAccess: isSubjectUnlocked,
       isSubjectUnlocked,
       unlockedSubjects,
+      permanentlyUnlockedSubjects,
+      globalFreeSubjects,
       sessionInvalidated,
+      serverTime,
       freePagesLimit: bookMeta.freePagesUpTo,
       totalChapterPages: bookPages.length,
       unlockedChapterPages: allowedPages.length,
@@ -464,6 +698,7 @@ async function handleLocalApiRequest(
 
   // 2. /api/auth
   if (pathname === "/api/auth") {
+    const serverTime = new Date().toISOString();
     if (method === "GET") {
       const uid = urlObj.searchParams.get("uid") || headerUid || storedUid;
       const sessionToken =
@@ -473,6 +708,9 @@ async function handleLocalApiRequest(
           valid: false,
           sessionInvalidated: false,
           unlockedSubjects: [],
+          permanentlyUnlockedSubjects: [],
+          subjectAccess: {},
+          serverTime,
         });
       }
       const check = await verifySessionInFirestore(uid, sessionToken);
@@ -482,6 +720,9 @@ async function handleLocalApiRequest(
             valid: false,
             sessionInvalidated: Boolean(check.sessionInvalidated),
             unlockedSubjects: [],
+            permanentlyUnlockedSubjects: [],
+            subjectAccess: {},
+            serverTime,
             message:
               "অন্য একটি ডিভাইস বা ব্রাউজারে আপনার অ্যাকাউন্টে লগইন করায় এই ডিভাইসের সেশনটি স্বয়ংক্রিয়ভাবে লগআউট হয়েছে।",
           },
@@ -492,7 +733,10 @@ async function handleLocalApiRequest(
         valid: true,
         sessionInvalidated: false,
         unlockedSubjects: check.unlockedSubjects,
+        permanentlyUnlockedSubjects: check.permanentlyUnlockedSubjects,
+        subjectAccess: check.subjectAccess,
         user: check.user || null,
+        serverTime,
       });
     }
 
@@ -522,7 +766,11 @@ async function handleLocalApiRequest(
             // ignore
           }
         }
-        return jsonResponse({ success: true, message: "লগআউট সফল হয়েছে।" });
+        return jsonResponse({
+          success: true,
+          message: "লগআউট সফল হয়েছে।",
+          serverTime,
+        });
       }
 
       if (action === "register") {
@@ -552,6 +800,7 @@ async function handleLocalApiRequest(
           hasAccess: false,
           unlockedSubjects: [] as string[],
           redeemedCodes: [] as string[],
+          subjectAccess: {} as Record<string, UserSubjectAccessRecord>,
           role: "reader" as const,
           activeSessionId: sessionId,
           activeSessionToken: sessionToken,
@@ -587,6 +836,9 @@ async function handleLocalApiRequest(
           user: newUser,
           sessionToken,
           unlockedSubjects: [],
+          permanentlyUnlockedSubjects: [],
+          subjectAccess: {},
+          serverTime: now,
           message: "রেজিস্ট্রেশন সফল হয়েছে!",
         });
       }
@@ -600,7 +852,8 @@ async function handleLocalApiRequest(
       }
 
       if (action === "firebase_session" && uid) {
-        const now = new Date().toISOString();
+        const nowMs = Date.now();
+        const now = new Date(nowMs).toISOString();
         const sessionId =
           "sess_" +
           Date.now().toString(36) +
@@ -622,7 +875,13 @@ async function handleLocalApiRequest(
           // ignore
         }
 
-        const unlockedSubjects = normalizeUnlocked(userRecord);
+        const unlockedSubjects = normalizeUnlocked(userRecord, nowMs);
+        const permanentlyUnlockedSubjects = getPermanentlyUnlocked(userRecord);
+        const subjectAccess = ((userRecord?.subjectAccess || {}) as Record<
+          string,
+          UserSubjectAccessRecord
+        >);
+
         const sessionDoc = {
           userId: String(uid),
           sessionId,
@@ -661,6 +920,9 @@ async function handleLocalApiRequest(
           success: true,
           sessionToken,
           unlockedSubjects,
+          permanentlyUnlockedSubjects,
+          subjectAccess,
+          serverTime: now,
           user: {
             uid: String(uid),
             email: (userRecord?.email as string) || email || "",
@@ -668,6 +930,7 @@ async function handleLocalApiRequest(
               (userRecord?.displayName as string) || displayName || "পাঠক",
             hasAccess: unlockedSubjects.length > 0,
             unlockedSubjects,
+            subjectAccess,
             role: (userRecord?.role as string) || "reader",
             unlockCode: (userRecord?.unlockCode as string) || null,
           },
@@ -687,13 +950,18 @@ async function handleLocalApiRequest(
       contactTelegram: BOOK_INFO.contactTelegram,
       freePagesLimit: BOOK_INFO.freePagesLimit,
       announcement:
-        "প্রতি বিষয় মাত্র ৳৪৯! আপনার পছন্দের বিষয়গুলো সিলেক্ট করে টেলিগ্রামে মেসেজ পাঠিয়ে আনলক কোড নিন।",
+        "আপনার পছন্দের বিষয় সিলেক্ট করে মেসেজ পাঠিয়ে আনলক কোড সংগ্রহ করুন।",
+      freeSubjects: {} as Record<string, SubjectFreeWindow>,
+      notices: [] as NoticeItem[],
     };
 
     if (method === "GET") {
       const uid = urlObj.searchParams.get("uid") || headerUid || storedUid;
       const sessionToken =
         urlObj.searchParams.get("sessionToken") || headerToken || storedToken;
+
+      const nowMs = Date.now();
+      const serverTime = new Date(nowMs).toISOString();
 
       let settings = defaultSettings;
       try {
@@ -705,23 +973,41 @@ async function handleLocalApiRequest(
         // ignore
       }
 
+      const globalFreeSubjects = getGlobalFreeSubjectsFromSettings(
+        settings as unknown as Record<string, unknown>,
+        nowMs
+      );
+
       if (uid && sessionToken) {
         const check = await verifySessionInFirestore(uid, sessionToken);
+        const effectiveUnlocked = Array.from(
+          new Set([...check.unlockedSubjects, ...globalFreeSubjects])
+        );
         return jsonResponse({
-          unlocked: check.unlockedSubjects.length > 0,
+          unlocked: effectiveUnlocked.length > 0,
           unlockedSubjects: check.unlockedSubjects,
+          effectiveUnlockedSubjects: effectiveUnlocked,
+          permanentlyUnlockedSubjects: check.permanentlyUnlockedSubjects,
+          globalFreeSubjects,
+          subjectAccess: check.subjectAccess,
           sessionInvalidated: Boolean(check.sessionInvalidated),
           pricePerSubject: SUBJECT_PRICE_BDT,
           settings,
+          serverTime,
         });
       }
 
       return jsonResponse({
-        unlocked: false,
+        unlocked: globalFreeSubjects.length > 0,
         unlockedSubjects: [],
+        effectiveUnlockedSubjects: globalFreeSubjects,
+        permanentlyUnlockedSubjects: [],
+        globalFreeSubjects,
+        subjectAccess: {},
         sessionInvalidated: false,
         pricePerSubject: SUBJECT_PRICE_BDT,
         settings,
+        serverTime,
       });
     }
 
@@ -749,104 +1035,320 @@ async function handleLocalApiRequest(
         );
       }
 
-      const codeRef = doc(db, "unlock_codes", normalizedCode);
-      const codeSnap = await getDoc(codeRef);
-      if (!codeSnap.exists()) {
-        return jsonResponse(
-          {
-            success: false,
-            message:
-              "❌ ভুল আনলক কোড! অনুগ্রহ করে সঠিক কোডটি লিখে আবার চেষ্টা করুন।",
-          },
-          404
-        );
-      }
+      const nowMs = Date.now();
+      const now = new Date(nowMs).toISOString();
 
-      const codeData = codeSnap.data() as Record<string, unknown>;
-      if (codeData.used) {
-        return jsonResponse(
-          {
-            success: false,
-            message:
-              "⚠️ এই আনলক কোডটি ইতিমধ্যে ব্যবহৃত হয়েছে। প্রতিটি কোড শুধুমাত্র একবার ব্যবহারযোগ্য।",
-          },
-          403
-        );
-      }
+      try {
+        const txResult = await runTransaction(db, async (transaction) => {
+          const codeRef = doc(db, "unlock_codes", normalizedCode);
+          const userRef = doc(db, "users", String(activeUid));
+          const readingRef = doc(db, "user_reading_data", String(activeUid));
 
-      const assignedSubjectIds =
-        Array.isArray(codeData.assignedSubjectIds) &&
-        codeData.assignedSubjectIds.length > 0
-          ? (codeData.assignedSubjectIds as string[]).filter((id) =>
-              ALL_SUBJECT_IDS.includes(id)
-            )
-          : [...ALL_SUBJECT_IDS];
+          const [codeSnap, userSnap] = await Promise.all([
+            transaction.get(codeRef),
+            transaction.get(userRef),
+          ]);
 
-      const now = new Date().toISOString();
-      const userRef = doc(db, "users", String(activeUid));
-      const userSnap = await getDoc(userRef);
-      const userData = userSnap.exists()
-        ? (userSnap.data() as Record<string, unknown>)
-        : {};
-      const existingSubjects = normalizeUnlocked(userData);
-      const mergedSubjects = Array.from(
-        new Set([...existingSubjects, ...assignedSubjectIds])
-      );
-      const newlyUnlocked = assignedSubjectIds.filter(
-        (id) => !existingSubjects.includes(id)
-      );
+          if (!codeSnap.exists()) {
+            throw {
+              status: 404,
+              message:
+                "❌ ভুল আনলক কোড! অনুগ্রহ করে সঠিক কোডটি লিখে আবার চেষ্টা করুন।",
+            };
+          }
 
-      await Promise.all([
-        setDoc(
-          codeRef,
-          {
-            ...codeData,
-            code: normalizedCode,
-            used: true,
+          const codeData = codeSnap.data() as Record<string, unknown>;
+
+          if (codeData.disabled) {
+            throw {
+              status: 403,
+              message:
+                "🚫 এই আনলক কোডটি অ্যাডমিন কর্তৃক নিষ্ক্রিয় (Disabled) করা হয়েছে।",
+            };
+          }
+
+          if (codeData.expiresAt && typeof codeData.expiresAt === "string") {
+            const expMs = Date.parse(codeData.expiresAt);
+            if (!isNaN(expMs) && nowMs > expMs) {
+              throw {
+                status: 403,
+                message:
+                  "⏳ এই আনলক কোডটির ব্যবহারের মেয়াদ (Redeem Expiry) শেষ হয়ে গেছে।",
+              };
+            }
+          }
+
+          const maxUses =
+            typeof codeData.maxUses === "number" && codeData.maxUses >= 1
+              ? codeData.maxUses
+              : 1;
+          const redeemers: CodeRedeemer[] = Array.isArray(codeData.redeemers)
+            ? [...(codeData.redeemers as CodeRedeemer[])]
+            : codeData.used && codeData.usedByUid
+            ? [
+                {
+                  uid: String(codeData.usedByUid),
+                  email: (codeData.usedByEmail as string) || null,
+                  deviceId: (codeData.usedByDevice as string) || null,
+                  redeemedAt:
+                    (codeData.usedAt as string) ||
+                    (codeData.createdAt as string) ||
+                    now,
+                },
+              ]
+            : [];
+          const usedCount =
+            typeof codeData.usedCount === "number"
+              ? Math.max(codeData.usedCount, redeemers.length)
+              : Math.max(redeemers.length, codeData.used ? 1 : 0);
+
+          const userData = userSnap.exists()
+            ? (userSnap.data() as Record<string, unknown>)
+            : {};
+
+          const existingRedeemedCodes = Array.isArray(userData.redeemedCodes)
+            ? (userData.redeemedCodes as string[])
+            : [];
+
+          const alreadyRedeemedByUser =
+            redeemers.some((r) => r.uid === String(activeUid)) ||
+            (maxUses === 1 &&
+              codeData.used &&
+              codeData.usedByUid === String(activeUid)) ||
+            existingRedeemedCodes.includes(normalizedCode);
+
+          if (alreadyRedeemedByUser) {
+            throw {
+              status: 403,
+              message:
+                "⚠️ আপনি ইতিমধ্যে এই আনলক কোডটি ব্যবহার করেছেন। একই কোড একজন ইউজার দুইবার ব্যবহার করতে পারবেন না।",
+            };
+          }
+
+          if (usedCount >= maxUses || (maxUses === 1 && codeData.used)) {
+            throw {
+              status: 403,
+              message:
+                maxUses === 1
+                  ? "⚠️ এই আনলক কোডটি ইতিমধ্যে ব্যবহৃত হয়েছে। প্রতিটি কোড শুধুমাত্র একবার ব্যবহারযোগ্য।"
+                  : `⚠️ এই কোডটির ব্যবহারের সীমা (${maxUses} জন) পূর্ণ হয়ে গেছে।`,
+            };
+          }
+
+          const assignedSubjectIds =
+            Array.isArray(codeData.assignedSubjectIds) &&
+            codeData.assignedSubjectIds.length > 0
+              ? (codeData.assignedSubjectIds as string[]).filter((id) =>
+                  ALL_SUBJECT_IDS.includes(id)
+                )
+              : [...ALL_SUBJECT_IDS];
+
+          const durationDays =
+            typeof codeData.accessDurationDays === "number" &&
+            codeData.accessDurationDays > 0
+              ? codeData.accessDurationDays
+              : null;
+          const isCodePermanent = durationDays === null;
+          const codeAccessExpiresAt = isCodePermanent
+            ? null
+            : new Date(nowMs + durationDays * 24 * 60 * 60 * 1000).toISOString();
+
+          const newUsedCount = usedCount + 1;
+          const newRedeemers: CodeRedeemer[] = [
+            ...redeemers,
+            {
+              uid: String(activeUid),
+              email: email || (userData.email as string) || null,
+              deviceId: String(deviceId || headerDevice || "capacitor"),
+              redeemedAt: now,
+            },
+          ];
+
+          const prevActiveSubjects = normalizeUnlocked(userData, nowMs);
+          const prevPermanentSubjects = getPermanentlyUnlocked(userData);
+          const subjectAccessMap: Record<string, UserSubjectAccessRecord> = {
+            ...((userData.subjectAccess || {}) as Record<
+              string,
+              UserSubjectAccessRecord
+            >),
+          };
+
+          for (const permId of prevPermanentSubjects) {
+            if (!subjectAccessMap[permId]) {
+              subjectAccessMap[permId] = {
+                userId: String(activeUid),
+                subjectId: permId,
+                unlockCode: (userData.unlockCode as string) || "LEGACY",
+                unlockDate: (userData.createdAt as string) || now,
+                status: "active",
+                isPermanent: true,
+                expiresAt: null,
+              };
+            }
+          }
+
+          for (const subId of assignedSubjectIds) {
+            const prevRec = subjectAccessMap[subId];
+            const wasAlreadyPermanent =
+              prevPermanentSubjects.includes(subId) ||
+              Boolean(
+                prevRec &&
+                  prevRec.status === "active" &&
+                  (prevRec.isPermanent === true || !prevRec.expiresAt)
+              );
+
+            if (isCodePermanent || wasAlreadyPermanent) {
+              subjectAccessMap[subId] = {
+                userId: String(activeUid),
+                subjectId: subId,
+                unlockCode: normalizedCode,
+                unlockDate: now,
+                status: "active",
+                isPermanent: true,
+                expiresAt: null,
+              };
+            } else {
+              const prevExpMs =
+                prevRec?.status === "active" && prevRec.expiresAt
+                  ? Date.parse(prevRec.expiresAt)
+                  : 0;
+              const nextExpMs = Date.parse(codeAccessExpiresAt!);
+              const bestExpiresAt =
+                !isNaN(prevExpMs) && prevExpMs > nextExpMs
+                  ? prevRec!.expiresAt!
+                  : codeAccessExpiresAt!;
+
+              subjectAccessMap[subId] = {
+                userId: String(activeUid),
+                subjectId: subId,
+                unlockCode: normalizedCode,
+                unlockDate: now,
+                status: "active",
+                isPermanent: false,
+                expiresAt: bestExpiresAt,
+              };
+            }
+          }
+
+          const mergedRedeemedCodes = Array.from(
+            new Set([...existingRedeemedCodes, normalizedCode])
+          );
+
+          const updatedUserDraft = {
+            ...userData,
+            uid: String(activeUid),
+            unlockedSubjects: Array.from(
+              new Set([...prevActiveSubjects, ...assignedSubjectIds])
+            ),
+            subjectAccess: subjectAccessMap,
+          };
+
+          const activeUnlocked = normalizeUnlocked(updatedUserDraft, nowMs);
+          const permanentUnlocked = getPermanentlyUnlocked(updatedUserDraft);
+          const newlyUnlocked = assignedSubjectIds.filter(
+            (id) => !prevActiveSubjects.includes(id)
+          );
+
+          transaction.set(
+            codeRef,
+            {
+              ...codeData,
+              code: normalizedCode,
+              maxUses,
+              usedCount: newUsedCount,
+              redeemers: newRedeemers,
+              used: newUsedCount >= maxUses,
+              assignedSubjectIds,
+              usedByUid: String(activeUid),
+              usedByEmail: email || userData.email || null,
+              usedByDevice: String(deviceId || headerDevice || "capacitor"),
+              usedAt: now,
+            },
+            { merge: true }
+          );
+
+          transaction.set(
+            userRef,
+            {
+              uid: String(activeUid),
+              hasAccess: activeUnlocked.length > 0,
+              unlockedSubjects: activeUnlocked,
+              redeemedCodes: mergedRedeemedCodes,
+              subjectAccess: subjectAccessMap,
+              unlockCode: normalizedCode,
+              unlockedAt: now,
+            },
+            { merge: true }
+          );
+
+          transaction.set(
+            readingRef,
+            {
+              uid: String(activeUid),
+              unlockedSubjects: permanentUnlocked,
+              redeemedCodes: mergedRedeemedCodes,
+              updatedAt: now,
+            },
+            { merge: true }
+          );
+
+          return {
+            activeUnlocked,
+            permanentUnlocked,
+            subjectAccessMap,
+            newlyUnlocked:
+              newlyUnlocked.length > 0 ? newlyUnlocked : assignedSubjectIds,
             assignedSubjectIds,
-            usedByUid: String(activeUid),
-            usedByEmail: email || userData.email || null,
-            usedByDevice: String(deviceId || headerDevice || "capacitor"),
-            usedAt: now,
-          },
-          { merge: true }
-        ),
-        setDoc(
-          userRef,
-          {
-            uid: String(activeUid),
-            hasAccess: mergedSubjects.length > 0,
-            unlockedSubjects: mergedSubjects,
-            unlockCode: normalizedCode,
-            unlockedAt: now,
-          },
-          { merge: true }
-        ),
-        setDoc(
-          doc(db, "user_reading_data", String(activeUid)),
-          {
-            uid: String(activeUid),
-            unlockedSubjects: mergedSubjects,
-            updatedAt: now,
-          },
-          { merge: true }
-        ),
-      ]);
+            isCodePermanent,
+            durationDays,
+            codeAccessExpiresAt,
+          };
+        });
 
-      const unlockedNames = CHAPTERS.filter((ch) =>
-        assignedSubjectIds.includes(ch.id)
-      )
-        .map((ch) => `বই ${ch.bookNumber} (${ch.courseCode})`)
-        .join(", ");
+        const unlockedNames = CHAPTERS.filter((ch) =>
+          txResult.assignedSubjectIds.includes(ch.id)
+        )
+          .map((ch) => `বই ${ch.bookNumber} (${ch.courseCode})`)
+          .join(", ");
 
-      return jsonResponse({
-        success: true,
-        message: `🎉 সফলভাবে আনলক হয়েছে: ${unlockedNames}!`,
-        unlockedSubjects: mergedSubjects,
-        newlyUnlockedSubjects:
-          newlyUnlocked.length > 0 ? newlyUnlocked : assignedSubjectIds,
-        code: normalizedCode,
-      });
+        const durationSuffix = txResult.isCodePermanent
+          ? " (স্থায়ী অ্যাক্সেস)"
+          : ` (${txResult.durationDays} দিনের জন্য)`;
+
+        return jsonResponse({
+          success: true,
+          message: `🎉 সফলভাবে আনলক হয়েছে: ${unlockedNames}${durationSuffix}!`,
+          unlockedSubjects: txResult.activeUnlocked,
+          permanentlyUnlockedSubjects: txResult.permanentUnlocked,
+          subjectAccess: txResult.subjectAccessMap,
+          newlyUnlockedSubjects: txResult.newlyUnlocked,
+          code: normalizedCode,
+          isPermanentUnlock: txResult.isCodePermanent,
+          accessDurationDays: txResult.durationDays,
+          accessExpiresAt: txResult.codeAccessExpiresAt,
+          serverTime: now,
+        });
+      } catch (err: unknown) {
+        const customErr = err as { status?: number; message?: string };
+        if (customErr && typeof customErr.status === "number" && customErr.message) {
+          return jsonResponse(
+            {
+              success: false,
+              message: customErr.message,
+              serverTime: now,
+            },
+            customErr.status
+          );
+        }
+        return jsonResponse(
+          {
+            success: false,
+            message: "সার্ভার সমস্যা হয়েছে। আবার চেষ্টা করুন।",
+            serverTime: now,
+          },
+          500
+        );
+      }
     }
   }
 
@@ -879,14 +1381,11 @@ async function handleLocalApiRequest(
         const uData = uSnap.exists()
           ? (uSnap.data() as Record<string, unknown>)
           : null;
-        const unlockedSubjects = Array.from(
-          new Set([
-            ...(Array.isArray(rData?.unlockedSubjects)
-              ? (rData.unlockedSubjects as string[])
-              : []),
-            ...normalizeUnlocked(uData),
-          ])
-        );
+        const unlockedSubjects = uData
+          ? normalizeUnlocked(uData)
+          : Array.isArray(rData?.unlockedSubjects)
+          ? (rData.unlockedSubjects as string[])
+          : [];
         return jsonResponse({
           data: rData
             ? { ...rData, unlockedSubjects }
@@ -958,6 +1457,17 @@ async function handleLocalApiRequest(
 
   // 5. /api/offline-lease
   if (pathname === "/api/offline-lease" && method === "POST") {
+    if (!isDeviceOnline()) {
+      return jsonResponse(
+        {
+          success: false,
+          message:
+            "ইন্টারনেট সংযোগ নেই! বইটি অফলাইনে ডাউনলোড করতে অনুগ্রহ করে ডাটা বা Wi-Fi চালু করুন।",
+        },
+        503
+      );
+    }
+
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     const {
       action = "acquire",
@@ -982,7 +1492,24 @@ async function handleLocalApiRequest(
       );
     }
 
-    const check = await verifySessionInFirestore(String(uid), String(sessionToken));
+    let check;
+    try {
+      check = await verifySessionInFirestore(
+        String(uid),
+        String(sessionToken),
+        true
+      );
+    } catch {
+      return jsonResponse(
+        {
+          success: false,
+          message:
+            "ইন্টারনেট সংযোগ নেই! বইটি অফলাইনে ডাউনলোড করতে অনুগ্রহ করে ডাটা বা Wi-Fi চালু করুন।",
+        },
+        503
+      );
+    }
+
     if (!check.valid) {
       return jsonResponse(
         {
@@ -1006,16 +1533,26 @@ async function handleLocalApiRequest(
 
     if (action === "acquire" || action === "renew") {
       try {
-        await setDoc(
-          doc(db, "users", String(uid)),
-          {
-            offlineDeviceId: String(deviceId),
-            offlineLeaseExpiresAt: expiresAt,
-          },
-          { merge: true }
+        await withTimeout(
+          setDoc(
+            doc(db, "users", String(uid)),
+            {
+              offlineDeviceId: String(deviceId),
+              offlineLeaseExpiresAt: expiresAt,
+            },
+            { merge: true }
+          ),
+          3500
         );
       } catch {
-        // ignore
+        return jsonResponse(
+          {
+            success: false,
+            message:
+              "ইন্টারনেট সংযোগ নেই! বইটি অফলাইনে ডাউনলোড করতে অনুগ্রহ করে ডাটা বা Wi-Fi চালু করুন।",
+          },
+          503
+        );
       }
       return jsonResponse({
         success: true,
@@ -1037,22 +1574,361 @@ async function handleLocalApiRequest(
   // 6. /api/admin/codes
   if (pathname === "/api/admin/codes") {
     if (method === "GET") {
-      const [codesSnap, usersSnap] = await Promise.all([
+      const [codesSnap, settingsSnap] = await Promise.all([
         getDocs(collection(db, "unlock_codes")),
-        getDocs(collection(db, "users")),
+        getDoc(doc(db, "settings", "site")),
       ]);
-      const codes = codesSnap.docs.map((d) => d.data());
-      const users = usersSnap.docs.map((d) => d.data());
+      const codes = codesSnap.docs
+        .map((d) => d.data())
+        .sort(
+          (a, b) =>
+            new Date((b.createdAt as string) || 0).getTime() -
+            new Date((a.createdAt as string) || 0).getTime()
+        );
+      const settings = settingsSnap.exists() ? settingsSnap.data() : {};
       return jsonResponse({
         codes,
-        users,
+        settings,
+        serverTime: new Date().toISOString(),
         subjects: CHAPTERS.map((ch) => ({
           id: ch.id,
+          index: ch.index,
           bookNumber: ch.bookNumber,
           courseCode: ch.courseCode,
           titleBn: ch.titleBn,
         })),
       });
+    }
+
+    if (method === "POST") {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      const {
+        action = "generate",
+        count = 1,
+        customCode,
+        prefix,
+        codeLength = 8,
+        maxUses = 1,
+        accessDurationDays = null,
+        expiresAt = null,
+        disabled,
+        note,
+        code,
+        settings,
+        assignedSubjectIds,
+        subjectIds,
+        subjectId,
+        enabled,
+        isUnlimited,
+        durationDays,
+        startAt,
+        endAt,
+        extendDays,
+        noticeTitle,
+        noticeBody,
+        noticeImportant,
+        noticeId,
+      } = body;
+
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+
+      if (action === "generate") {
+        const validSubjects: string[] = Array.isArray(assignedSubjectIds)
+          ? assignedSubjectIds.filter((id: string) =>
+              ALL_SUBJECT_IDS.includes(id)
+            )
+          : ALL_SUBJECT_IDS;
+        const normalizedMaxUses = Math.min(
+          Math.max(1, Math.floor(Number(maxUses) || 1)),
+          10000
+        );
+        const normalizedDurationDays =
+          accessDurationDays !== null &&
+          accessDurationDays !== undefined &&
+          accessDurationDays !== "" &&
+          Number(accessDurationDays) > 0
+            ? Math.floor(Number(accessDurationDays))
+            : null;
+        const normalizedExpiresAt =
+          expiresAt &&
+          String(expiresAt).trim() &&
+          !isNaN(Date.parse(String(expiresAt)))
+            ? new Date(String(expiresAt)).toISOString()
+            : null;
+
+        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        const cleanPrefix = String(prefix || "")
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, "")
+          .slice(0, 8);
+        const len = Math.min(Math.max(4, Number(codeLength) || 8), 16);
+
+        const created: string[] = [];
+        const num =
+          customCode && String(customCode).trim()
+            ? 1
+            : Math.min(Math.max(1, Number(count) || 1), 200);
+
+        for (let i = 0; i < num; i++) {
+          let newCode = "";
+          if (customCode && String(customCode).trim()) {
+            newCode = String(customCode).toUpperCase().trim();
+          } else {
+            let raw = "";
+            for (let j = 0; j < len; j++) {
+              raw += chars[Math.floor(Math.random() * chars.length)];
+            }
+            const grouped =
+              raw.length >= 8 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
+            newCode = cleanPrefix ? `${cleanPrefix}-${grouped}` : grouped;
+          }
+          const rec = {
+            code: newCode,
+            used: false,
+            disabled: false,
+            maxUses: normalizedMaxUses,
+            usedCount: 0,
+            redeemers: [],
+            accessDurationDays: normalizedDurationDays,
+            expiresAt: normalizedExpiresAt,
+            assignedSubjectIds: validSubjects,
+            note: note || "",
+            createdAt: nowIso,
+          };
+          await setDoc(doc(db, "unlock_codes", newCode), rec, { merge: true });
+          created.push(newCode);
+        }
+
+        const codesSnap = await getDocs(collection(db, "unlock_codes"));
+        return jsonResponse({
+          success: true,
+          newCodes: created,
+          codes: codesSnap.docs.map((d) => d.data()),
+          serverTime: nowIso,
+        });
+      }
+
+      if (action === "toggle_disable" && code) {
+        const clean = String(code).toUpperCase().trim();
+        await setDoc(
+          doc(db, "unlock_codes", clean),
+          { disabled: Boolean(disabled) },
+          { merge: true }
+        );
+        const codesSnap = await getDocs(collection(db, "unlock_codes"));
+        return jsonResponse({
+          success: true,
+          codes: codesSnap.docs.map((d) => d.data()),
+          serverTime: nowIso,
+        });
+      }
+
+      if (action === "reset" && code) {
+        const clean = String(code).toUpperCase().trim();
+        await setDoc(
+          doc(db, "unlock_codes", clean),
+          {
+            used: false,
+            usedCount: 0,
+            redeemers: [],
+            usedByUid: null,
+            usedByEmail: null,
+            usedByDevice: null,
+            usedAt: null,
+          },
+          { merge: true }
+        );
+        const codesSnap = await getDocs(collection(db, "unlock_codes"));
+        return jsonResponse({
+          success: true,
+          codes: codesSnap.docs.map((d) => d.data()),
+          serverTime: nowIso,
+        });
+      }
+
+      if (action === "delete" && code) {
+        const clean = String(code).toUpperCase().trim();
+        await deleteDoc(doc(db, "unlock_codes", clean));
+        const codesSnap = await getDocs(collection(db, "unlock_codes"));
+        return jsonResponse({
+          success: true,
+          codes: codesSnap.docs.map((d) => d.data()),
+          serverTime: nowIso,
+        });
+      }
+
+      if (action === "set_free_subjects") {
+        const sSnap = await getDoc(doc(db, "settings", "site"));
+        const currentSettings = (sSnap.exists() ? sSnap.data() : {}) as Record<
+          string,
+          unknown
+        >;
+        const freeSubjectsMap: Record<string, SubjectFreeWindow> = {
+          ...((currentSettings.freeSubjects || {}) as Record<
+            string,
+            SubjectFreeWindow
+          >),
+        };
+        const targetIds: string[] = Array.isArray(subjectIds)
+          ? subjectIds.filter((id: string) => ALL_SUBJECT_IDS.includes(id))
+          : subjectId && ALL_SUBJECT_IDS.includes(String(subjectId))
+          ? [String(subjectId)]
+          : [];
+
+        for (const subId of targetIds) {
+          if (!enabled) {
+            freeSubjectsMap[subId] = {
+              subjectId: subId,
+              enabled: false,
+              isUnlimited: false,
+              durationDays: null,
+              startAt: freeSubjectsMap[subId]?.startAt || nowIso,
+              endAt: nowIso,
+              updatedAt: nowIso,
+            };
+            continue;
+          }
+          const existingWin = freeSubjectsMap[subId];
+          const parsedStartMs =
+            startAt && !isNaN(Date.parse(String(startAt)))
+              ? Date.parse(String(startAt))
+              : nowMs;
+          const effectiveStartIso = new Date(parsedStartMs).toISOString();
+
+          if (isUnlimited) {
+            freeSubjectsMap[subId] = {
+              subjectId: subId,
+              enabled: true,
+              isUnlimited: true,
+              durationDays: null,
+              startAt: effectiveStartIso,
+              endAt: null,
+              updatedAt: nowIso,
+            };
+          } else if (extendDays && Number(extendDays) > 0 && existingWin) {
+            const baseEndMs =
+              existingWin.endAt && !isNaN(Date.parse(existingWin.endAt))
+                ? Math.max(nowMs, Date.parse(existingWin.endAt))
+                : nowMs;
+            freeSubjectsMap[subId] = {
+              subjectId: subId,
+              enabled: true,
+              isUnlimited: false,
+              durationDays:
+                (existingWin.durationDays || 0) + Number(extendDays),
+              startAt: existingWin.startAt || nowIso,
+              endAt: new Date(
+                baseEndMs + Number(extendDays) * 24 * 60 * 60 * 1000
+              ).toISOString(),
+              updatedAt: nowIso,
+            };
+          } else {
+            const days = Math.max(1, Number(durationDays) || 1);
+            freeSubjectsMap[subId] = {
+              subjectId: subId,
+              enabled: true,
+              isUnlimited: false,
+              durationDays: days,
+              startAt: effectiveStartIso,
+              endAt:
+                endAt && !isNaN(Date.parse(String(endAt)))
+                  ? new Date(String(endAt)).toISOString()
+                  : new Date(
+                      parsedStartMs + days * 24 * 60 * 60 * 1000
+                    ).toISOString(),
+              updatedAt: nowIso,
+            };
+          }
+        }
+
+        const updatedSettings = {
+          ...currentSettings,
+          freeSubjects: freeSubjectsMap,
+        };
+        await setDoc(doc(db, "settings", "site"), updatedSettings, {
+          merge: true,
+        });
+        return jsonResponse({
+          success: true,
+          settings: updatedSettings,
+          serverTime: nowIso,
+        });
+      }
+
+      if (action === "add_notice") {
+        const sSnap = await getDoc(doc(db, "settings", "site"));
+        const currentSettings = (sSnap.exists() ? sSnap.data() : {}) as Record<
+          string,
+          unknown
+        >;
+        const newNotice: NoticeItem = {
+          id:
+            "ntc_" +
+            Date.now().toString(36) +
+            "_" +
+            Math.random().toString(36).slice(2, 6),
+          title: String(noticeTitle || "গুরুত্বপূর্ণ নোটিশ").trim(),
+          body: String(noticeBody || "").trim(),
+          createdAt: nowIso,
+          important: Boolean(noticeImportant),
+        };
+        const nextNotices = [
+          newNotice,
+          ...(Array.isArray(currentSettings.notices)
+            ? (currentSettings.notices as NoticeItem[])
+            : []),
+        ];
+        const updatedSettings = {
+          ...currentSettings,
+          notices: nextNotices,
+          announcement: newNotice.body,
+        };
+        await setDoc(doc(db, "settings", "site"), updatedSettings, {
+          merge: true,
+        });
+        return jsonResponse({
+          success: true,
+          settings: updatedSettings,
+          notice: newNotice,
+          serverTime: nowIso,
+        });
+      }
+
+      if (action === "delete_notice" && noticeId) {
+        const sSnap = await getDoc(doc(db, "settings", "site"));
+        const currentSettings = (sSnap.exists() ? sSnap.data() : {}) as Record<
+          string,
+          unknown
+        >;
+        const nextNotices = (
+          Array.isArray(currentSettings.notices)
+            ? (currentSettings.notices as NoticeItem[])
+            : []
+        ).filter((n) => n.id !== String(noticeId));
+        const updatedSettings = {
+          ...currentSettings,
+          notices: nextNotices,
+          announcement: nextNotices[0]?.body || "",
+        };
+        await setDoc(doc(db, "settings", "site"), updatedSettings, {
+          merge: true,
+        });
+        return jsonResponse({
+          success: true,
+          settings: updatedSettings,
+          serverTime: nowIso,
+        });
+      }
+
+      if (action === "settings" && settings) {
+        await setDoc(doc(db, "settings", "site"), settings, { merge: true });
+        return jsonResponse({
+          success: true,
+          settings,
+          serverTime: nowIso,
+        });
+      }
     }
   }
 

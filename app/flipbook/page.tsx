@@ -6,9 +6,10 @@ import Link from "next/link";
 import { useAuth } from "@/lib/context/AuthContext";
 import { CHAPTERS, TOTAL_BOOK_PAGES } from "@/lib/book/chapters";
 import {
-   getOfflineBookData,
+  getOfflineBookData,
   searchOfflineVaultBooks,
   OfflineSearchHit,
+  isDeviceOnline,
 } from "@/lib/offline/offlineStore";
 import OfflineDownloadModal from "@/components/OfflineDownloadModal";
 import { recordReadingHeartbeat } from "@/lib/readingStats";
@@ -81,6 +82,7 @@ function FlipbookInner() {
   const {
     unlockedSubjects,
     isSubjectUnlocked,
+    getSubjectAccessInfo,
     deviceId,
     sessionToken,
     profile,
@@ -117,21 +119,39 @@ function FlipbookInner() {
   );
   const currentBook = CHAPTERS[chapterIndex] || CHAPTERS[0];
   const activeUid = profile?.uid || user?.uid || "";
+  const currentBookAccessInfo = getSubjectAccessInfo(chapterIndex);
   const currentBookUnlocked = isSubjectUnlocked(chapterIndex);
   const currentBookOfflineSaved = isBookSavedOffline(chapterIndex);
   const isSavingThisBook = savingOfflineChapter === chapterIndex;
   const [isReadingOffline, setIsReadingOffline] = useState(false);
   const [offlineNotice, setOfflineNotice] = useState<string | null>(null);
   const [showOfflineDownloadAnim, setShowOfflineDownloadAnim] = useState(false);
+  const [offlineDownloadDone, setOfflineDownloadDone] = useState(false);
   const [offlinePendingNotice, setOfflinePendingNotice] = useState<string | null>(null);
   const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
 
   const handleToggleOffline = async () => {
     setOfflineNotice(null);
     if (!currentBookOfflineSaved) {
+      if (!isDeviceOnline()) {
+        setOfflineNotice(
+          "⚠️ ইন্টারনেট সংযোগ নেই! বইটি অফলাইনে ডাউনলোড করতে অনুগ্রহ করে ডাটা বা Wi-Fi চালু করুন।"
+        );
+        setTimeout(() => setOfflineNotice(null), 4500);
+        return;
+      }
+      setOfflineDownloadDone(false);
       setShowOfflineDownloadAnim(true);
       const res = await toggleOfflineBook(chapterIndex);
+      if (!res.success) {
+        setShowOfflineDownloadAnim(false);
+        setOfflineDownloadDone(false);
+        setOfflineNotice(res.message);
+        setTimeout(() => setOfflineNotice(null), 4500);
+        return;
+      }
       setOfflinePendingNotice(res.message);
+      setOfflineDownloadDone(true);
     } else {
       setShowDeleteConfirmModal(true);
     }
@@ -200,7 +220,7 @@ function FlipbookInner() {
 
   const navigateOfflineSafe = useCallback(
     (targetUrl: string) => {
-      if (typeof window !== "undefined" && !navigator.onLine) {
+      if (typeof window !== "undefined" && !isDeviceOnline()) {
         window.location.assign(targetUrl);
         return;
       }
@@ -217,7 +237,7 @@ function FlipbookInner() {
     }
     const timer = setTimeout(async () => {
       setSearching(true);
-      const isOfflineNow = typeof navigator !== "undefined" && !navigator.onLine;
+      const isOfflineNow = !isDeviceOnline();
 
       if (isOfflineNow) {
         try {
@@ -287,7 +307,10 @@ function FlipbookInner() {
     const isChapterSwitch = lastFetchedChapterRef.current !== chapterIndex;
     if (isChapterSwitch) {
       setLoadingBook(true);
+      setPages([]);
+      setBookToc(null);
     }
+    setOfflineNotice(null);
 
     const loadFlipbook = async () => {
       const applyLoadedData = (loadedPages: FlipPageData[], tocData?: BookTocData) => {
@@ -328,11 +351,11 @@ function FlipbookInner() {
           mode: "flipbook",
         });
         if (cached.expired && cached.message) {
-          if (active) setOfflineNotice(cached.message);
+          if (active && !isDeviceOnline()) setOfflineNotice(cached.message);
           return false;
         }
-        if (cached.found && Array.isArray(cached.pages)) {
-          if (active) setIsReadingOffline(true);
+        if (cached.found && Array.isArray(cached.pages) && cached.pages.length > 0) {
+          if (active) setIsReadingOffline(!isDeviceOnline());
           applyLoadedData(
             cached.pages as FlipPageData[],
             (cached.toc as BookTocData) || undefined
@@ -342,14 +365,24 @@ function FlipbookInner() {
         return false;
       };
 
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        const ok = await tryOfflineFallback();
-        if (!ok && active) {
+      // 1. Always check encrypted IndexedDB vault FIRST if book is unlocked so saved offline books open instantaneously!
+      if (currentBookUnlocked) {
+        const loadedFromVault = await tryOfflineFallback();
+        if (loadedFromVault) return;
+      }
+
+      if (!isDeviceOnline()) {
+        if (active) {
+          setPages([]);
+          setBookToc(null);
+          setIsReadingOffline(false);
           setLoadingBook(false);
-          setOfflineNotice("আপনি এখন অফলাইনে আছেন। এই বইটি অফলাইনে সেভ করা নেই।");
+          setOfflineNotice(
+            "আপনি এখন অফলাইনে আছেন। এই বইটি অফলাইনে সেভ করা নেই। বইটি পড়তে বা অফলাইনে ডাউনলোড করতে ইন্টারনেট সংযোগ চালু করুন।"
+          );
         }
         return;
-      };
+      }
 
       try {
         const headers: Record<string, string> = {};
@@ -369,6 +402,9 @@ function FlipbookInner() {
         });
         const data = await r.json();
         if (!active) return;
+        if (!r.ok || data.offline || data.error) {
+          throw new Error(data.error || "Network offline");
+        }
         if (data.sessionInvalidated) {
           handleSessionInvalidated();
           return;
@@ -378,7 +414,13 @@ function FlipbookInner() {
       } catch {
         const ok = await tryOfflineFallback();
         if (!ok && active) {
+          setPages([]);
+          setBookToc(null);
+          setIsReadingOffline(false);
           setLoadingBook(false);
+          setOfflineNotice(
+            "আপনি এখন অফলাইনে আছেন। এই বইটি অফলাইনে সেভ করা নেই। বইটি পড়তে বা অফলাইনে ডাউনলোড করতে ইন্টারনেট সংযোগ চালু করুন।"
+          );
         }
       }
     };
@@ -902,6 +944,32 @@ function FlipbookInner() {
         </div>
       )}
 
+      {(currentBookAccessInfo.badgeType === "free" ||
+        currentBookAccessInfo.badgeType === "timed") && (
+        <div className="max-w-xl mx-auto px-4 pb-1.5 w-full shrink-0">
+          <div
+            className={`rounded-xl px-3.5 py-1.5 border flex items-center justify-between gap-2 text-[11px] font-bold shadow-2xs ${
+              currentBookAccessInfo.badgeType === "free"
+                ? "bg-emerald-500/12 border-emerald-500/25 text-emerald-950 dark:text-emerald-200"
+                : "bg-amber-500/12 border-amber-500/25 text-amber-950 dark:text-amber-200"
+            }`}
+          >
+            <span className="truncate">
+              {currentBookAccessInfo.badgeType === "free" ? "🎁 ফ্রি" : "⏳ টাইমড"} • বই {currentBook.bookNumber}:{" "}
+              {currentBookAccessInfo.countdownTextBn ||
+                currentBookAccessInfo.badgeTextBn}
+            </span>
+            <button
+              type="button"
+              onClick={() => navigateToUnlockOrLogin(chapterIndex)}
+              className="underline underline-offset-2 shrink-0 cursor-pointer"
+            >
+              স্থায়ী আনলক →
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Center Book Page Card: Mobile stays compact, PC expands large & full-screen! */}
       <main className="flex-1 flex items-center justify-center px-2.5 sm:px-8 lg:px-12 pb-16 sm:pb-20 min-h-0">
         <div className="relative flex items-center justify-center w-full max-w-7xl h-full">
@@ -929,9 +997,41 @@ function FlipbookInner() {
                 : ""
             }`}
           >
-            {loadingBook || !pageData ? (
-              <div className="flex-1 col-span-2 flex items-center justify-center opacity-40">
+            {loadingBook ? (
+              <div className="flex-1 col-span-2 flex flex-col items-center justify-center gap-3 opacity-50">
                 <div className="animate-spin w-6 h-6 border-2 border-current border-t-transparent rounded-full" />
+                <span className="text-xs tracking-widest uppercase">লোড হচ্ছে...</span>
+              </div>
+            ) : !pageData ? (
+              <div className="flex-1 col-span-2 flex flex-col items-center justify-center p-6 text-center space-y-4">
+                <div className="w-12 h-12 rounded-2xl bg-black/5 dark:bg-white/10 flex items-center justify-center">
+                  <WifiOff size={22} className="opacity-70" />
+                </div>
+                <div className="space-y-1.5 max-w-sm">
+                  <h3 className="text-sm sm:text-base font-bold">
+                    {currentBook.titleBn}
+                  </h3>
+                  <p className="text-xs opacity-75 leading-relaxed">
+                    {offlineNotice ||
+                      "আপনি এখন অফলাইনে আছেন। এই বইটি অফলাইনে সেভ করা নেই। বইটি পড়তে বা অফলাইনে ডাউনলোড করতে ইন্টারনেট সংযোগ চালু করুন।"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => navigateOfflineSafe("/")}
+                    className="px-4 py-2 rounded-full border border-current/20 text-xs font-bold cursor-pointer"
+                  >
+                    হোমে ফিরে যান
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="px-4 py-2 rounded-full bg-[#141413] text-white dark:bg-white dark:text-black text-xs font-bold cursor-pointer"
+                  >
+                    পুনরায় চেষ্টা করুন
+                  </button>
+                </div>
               </div>
             ) : secondPageData ? (
               <>
@@ -1658,11 +1758,13 @@ function FlipbookInner() {
       {/* Dynamic Offline Download Progress Animation */}
       <OfflineDownloadModal
         isOpen={showOfflineDownloadAnim}
+        isCompleted={offlineDownloadDone}
         bookNumber={currentBook.bookNumber}
         bookTitle={currentBook.titleBn}
         totalPages={currentBook.endPage - currentBook.startPage + 1}
         onComplete={() => {
           setShowOfflineDownloadAnim(false);
+          setOfflineDownloadDone(false);
           if (offlinePendingNotice) {
             setOfflineNotice(offlinePendingNotice);
             setOfflinePendingNotice(null);

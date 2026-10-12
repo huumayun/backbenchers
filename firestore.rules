@@ -34,7 +34,7 @@ service cloud.firestore {
 
     // ─── 1. Users Collection (users/{userId}) ──────────────────────────────────
     // Stores user account info, permanently unlocked subjects (unlockedSubjects),
-    // redeemedCodes, subjectAccess map, and active session reference.
+    // redeemedCodes, subjectAccess map (permanent & timed), and active session reference.
     match /users/{userId} {
       allow get, list: if true;
       allow create, update: if isOwner(userId) || isValidUserDoc(userId);
@@ -61,7 +61,7 @@ service cloud.firestore {
 
     // ─── 4. Unlock Codes (unlock_codes/{codeId}) ───────────────────────────────
     // Stores generated unlock codes, assignedSubjectIds (1 to 7 subjects),
-    // one-time usage status (used: true/false), and redemption metadata.
+    // maxUses, usedCount, redeemers list, accessDurationDays, expiresAt, disabled.
     match /unlock_codes/{codeId} {
       allow get, list: if true;
       allow create, update: if isValidUnlockCodeDoc(codeId);
@@ -69,15 +69,22 @@ service cloud.firestore {
     }
 
     // ─── 5. Site Settings (settings/{docId}) ───────────────────────────────────
-    // Stores dynamic site config (settings/site): price (৳49), Telegram link,
-    // WhatsApp number, bKash/Nagad payment info, and announcements.
+    // Stores dynamic site config (settings/site): price, freeSubjects windows,
+    // notices list, Telegram link, WhatsApp number, bKash/Nagad payment info.
+    // Readable by everyone (including guests) so free windows & notices work everywhere.
     match /settings/{docId} {
       allow get, list: if true;
-      allow create, update: if docId == "site";
+      allow create, update: if docId == "site" || docId == "admin_credentials";
       allow delete: if false;
     }
 
-    // ─── 6. Legacy / Direct Client Collections ─────────────────────────────────
+    // ─── 6. Notices Collection (notices/{noticeId}) ────────────────────────────
+    match /notices/{noticeId} {
+      allow get, list: if true;
+      allow create, update, delete: if true;
+    }
+
+    // ─── 7. Legacy / Direct Client Collections ─────────────────────────────────
     match /reading_progress/{userId} {
       allow read, write: if isOwner(userId);
     }

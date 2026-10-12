@@ -7,6 +7,7 @@ import {
   invalidateUserSession,
   getUserAccountById,
   normalizeUnlockedSubjects,
+  getPermanentlyUnlockedSubjects,
 } from "@/lib/server/store";
 
 function getClientIp(req: NextRequest): string {
@@ -29,11 +30,16 @@ export async function GET(req: NextRequest) {
     req.cookies.get("ebook_session_token")?.value ||
     "";
 
+  const serverTime = new Date().toISOString();
+
   if (!uid || !sessionToken) {
     return NextResponse.json({
       valid: false,
       sessionInvalidated: false,
       unlockedSubjects: [],
+      permanentlyUnlockedSubjects: [],
+      subjectAccess: {},
+      serverTime,
     });
   }
 
@@ -44,6 +50,9 @@ export async function GET(req: NextRequest) {
         valid: false,
         sessionInvalidated: Boolean(check.sessionInvalidated),
         unlockedSubjects: [],
+        permanentlyUnlockedSubjects: [],
+        subjectAccess: {},
+        serverTime,
         message:
           "অন্য একটি ডিভাইস বা ব্রাউজারে আপনার অ্যাকাউন্টে লগইন করায় এই ডিভাইসের সেশনটি স্বয়ংক্রিয়ভাবে লগআউট হয়েছে।",
       },
@@ -51,11 +60,16 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const permanentlyUnlockedSubjects = getPermanentlyUnlockedSubjects(check.user);
+
   return NextResponse.json({
     valid: true,
     sessionInvalidated: false,
     unlockedSubjects: check.unlockedSubjects,
+    permanentlyUnlockedSubjects,
+    subjectAccess: check.user?.subjectAccess || {},
     user: check.user || null,
+    serverTime,
   });
 }
 
@@ -74,6 +88,7 @@ export async function POST(req: NextRequest) {
 
     const clientIp = getClientIp(req);
     const userAgent = req.headers.get("user-agent") || "unknown";
+    const serverTime = new Date().toISOString();
 
     if (action === "logout") {
       const targetUid = uid || req.cookies.get("ebook_uid")?.value;
@@ -83,6 +98,7 @@ export async function POST(req: NextRequest) {
       const res = NextResponse.json({
         success: true,
         message: "লগআউট সফল হয়েছে।",
+        serverTime,
       });
       res.cookies.delete("ebook_session_token");
       res.cookies.delete("ebook_uid");
@@ -99,11 +115,15 @@ export async function POST(req: NextRequest) {
         userAgent
       );
       const unlockedSubjects = normalizeUnlockedSubjects(userRecord);
+      const permanentlyUnlockedSubjects = getPermanentlyUnlockedSubjects(userRecord);
 
       const res = NextResponse.json({
         success: true,
         sessionToken: session.sessionToken,
         unlockedSubjects,
+        permanentlyUnlockedSubjects,
+        subjectAccess: userRecord?.subjectAccess || {},
+        serverTime,
         user: userRecord
           ? {
               uid: userRecord.uid,
@@ -111,6 +131,7 @@ export async function POST(req: NextRequest) {
               displayName: userRecord.displayName,
               hasAccess: unlockedSubjects.length > 0,
               unlockedSubjects,
+              subjectAccess: userRecord.subjectAccess || {},
               role: userRecord.role || "reader",
               unlockCode: userRecord.unlockCode || null,
             }
@@ -176,10 +197,14 @@ export async function POST(req: NextRequest) {
         user: {
           ...result.user,
           unlockedSubjects: [],
+          subjectAccess: {},
           hasAccess: false,
         },
         sessionToken: session.sessionToken,
         unlockedSubjects: [],
+        permanentlyUnlockedSubjects: [],
+        subjectAccess: {},
+        serverTime,
         message: "রেজিস্ট্রেশন সফল হয়েছে!",
       });
 
@@ -213,6 +238,7 @@ export async function POST(req: NextRequest) {
 
       const user = result.user;
       const unlockedSubjects = normalizeUnlockedSubjects(user);
+      const permanentlyUnlockedSubjects = getPermanentlyUnlockedSubjects(user);
 
       // Issue a brand new single active session for this user (invalidates any previous session on another device/browser)
       const session = await issueSingleActiveSession(
@@ -231,7 +257,10 @@ export async function POST(req: NextRequest) {
         },
         sessionToken: session.sessionToken,
         unlockedSubjects,
+        permanentlyUnlockedSubjects,
+        subjectAccess: user.subjectAccess || {},
         unlockedCode: user.unlockCode || null,
+        serverTime,
         message: "লগইন সফল হয়েছে!",
       });
 

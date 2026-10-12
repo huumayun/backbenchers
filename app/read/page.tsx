@@ -8,6 +8,7 @@ import { CHAPTERS, TOTAL_BOOK_PAGES } from "@/lib/book/chapters";
 import {
   getOfflineBookData,
   searchOfflineVaultBooks,
+  isDeviceOnline,
 } from "@/lib/offline/offlineStore";
 import OfflineDownloadModal from "@/components/OfflineDownloadModal";
 import { recordReadingHeartbeat } from "@/lib/readingStats";
@@ -85,6 +86,7 @@ function ReaderInner() {
   const {
     unlockedSubjects,
     isSubjectUnlocked,
+    getSubjectAccessInfo,
     deviceId,
     sessionToken,
     profile,
@@ -165,7 +167,7 @@ function ReaderInner() {
       const startPath =
         typeof window !== "undefined" ? window.location.pathname : "";
       router.push(targetHref);
-      if (typeof window !== "undefined" && !navigator.onLine) {
+      if (typeof window !== "undefined" && !isDeviceOnline()) {
         setTimeout(() => {
           if (window.location.pathname === startPath) {
             window.location.href = targetHref;
@@ -310,18 +312,36 @@ function ReaderInner() {
   }, []);
 
   const activeUid = profile?.uid || user?.uid || "";
+  const currentBookAccessInfo = getSubjectAccessInfo(chapterIndex);
   const currentBookUnlocked = isSubjectUnlocked(chapterIndex);
   const currentBookOfflineSaved = isBookSavedOffline(chapterIndex);
 
   const [showOfflineDownloadAnim, setShowOfflineDownloadAnim] = useState(false);
+  const [offlineDownloadDone, setOfflineDownloadDone] = useState(false);
   const [offlinePendingMsg, setOfflinePendingMsg] = useState<string | null>(null);
   const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
 
   const handleToggleOfflineSave = async () => {
     if (!currentBookOfflineSaved) {
+      if (!isDeviceOnline()) {
+        setOfflineToastMsg(
+          "⚠️ ইন্টারনেট সংযোগ নেই! বইটি অফলাইনে ডাউনলোড করতে অনুগ্রহ করে ডাটা বা Wi-Fi চালু করুন।"
+        );
+        setTimeout(() => setOfflineToastMsg(null), 4500);
+        return;
+      }
+      setOfflineDownloadDone(false);
       setShowOfflineDownloadAnim(true);
       const res = await toggleOfflineBook(chapterIndex);
+      if (!res.success) {
+        setShowOfflineDownloadAnim(false);
+        setOfflineDownloadDone(false);
+        setOfflineToastMsg(res.message);
+        setTimeout(() => setOfflineToastMsg(null), 4500);
+        return;
+      }
       setOfflinePendingMsg(res.message);
+      setOfflineDownloadDone(true);
     } else {
       setShowDeleteConfirmModal(true);
     }
@@ -339,6 +359,8 @@ function ReaderInner() {
     const isChapterSwitch = lastFetchedChapterRef.current !== chapterIndex;
     if (isChapterSwitch) {
       setFetching(true);
+      setPages([]);
+      setBookToc(null);
     }
     setOfflineErrorBanner(null);
 
@@ -395,34 +417,44 @@ function ReaderInner() {
     };
 
     const loadBook = async () => {
-      const isBrowserOffline =
-        typeof navigator !== "undefined" && !navigator.onLine;
-
-      // 1. If device is offline, load directly from encrypted IndexedDB vault
-      if (isBrowserOffline) {
-        const vault = await getOfflineBookData({
-          chapterIndex,
-          uid: activeUid,
-          deviceId,
-          mode: "chapter",
-        });
-        if (!active) return;
-        if (vault.found && !vault.expired && vault.pages) {
-          applyLoadedData(
-            vault.pages as ChapterPageItem[],
-            (vault.toc as BookTocData) || null,
-            true
-          );
-          return;
-        }
-        if (vault.found && vault.expired) {
-          setOfflineErrorBanner(vault.message || null);
-          setFetching(false);
-          return;
-        }
-        setOfflineErrorBanner(
-          "আপনি এখন অফলাইনে আছেন। এই বইটি অফলাইনে সেভ করা নেই।"
+      // 1. Always check encrypted IndexedDB vault FIRST if book is unlocked so saved offline books open instantaneously!
+      const vault = await getOfflineBookData({
+        chapterIndex,
+        uid: activeUid,
+        deviceId,
+        mode: "chapter",
+      });
+      if (!active) return;
+      if (
+        currentBookUnlocked &&
+        vault.found &&
+        !vault.expired &&
+        Array.isArray(vault.pages) &&
+        vault.pages.length > 0
+      ) {
+        applyLoadedData(
+          vault.pages as ChapterPageItem[],
+          (vault.toc as BookTocData) || null,
+          !isDeviceOnline()
         );
+        return;
+      }
+
+      const isOfflineNow = !isDeviceOnline();
+      if (isOfflineNow) {
+        setPages([]);
+        setBookToc(null);
+        setReadingFromOfflineVault(false);
+        if (vault.found && vault.expired) {
+          setOfflineErrorBanner(
+            vault.message ||
+              "অফলাইন মেয়াদ শেষ হয়েছে। ইন্টারনেট চালু করে পুনরায় প্রবেশ করুন।"
+          );
+        } else {
+          setOfflineErrorBanner(
+            "আপনি এখন অফলাইনে আছেন। এই বইটি অফলাইনে সেভ করা নেই। বইটি পড়তে বা অফলাইনে ডাউনলোড করতে ইন্টারনেট সংযোগ চালু করুন।"
+          );
+        }
         setFetching(false);
         return;
       }
@@ -449,6 +481,9 @@ function ReaderInner() {
         );
         const data = await r.json();
         if (!active) return;
+        if (!r.ok || data.offline || data.error) {
+          throw new Error(data.error || "Network offline");
+        }
         if (data.sessionInvalidated) {
           handleSessionInvalidated();
           return;
@@ -457,23 +492,35 @@ function ReaderInner() {
       } catch {
         if (!active) return;
         // Fallback to encrypted IndexedDB vault if network request failed
-        const vault = await getOfflineBookData({
+        const fallbackVault = await getOfflineBookData({
           chapterIndex,
           uid: activeUid,
           deviceId,
           mode: "chapter",
         });
         if (!active) return;
-        if (vault.found && !vault.expired && vault.pages) {
+        if (
+          fallbackVault.found &&
+          !fallbackVault.expired &&
+          Array.isArray(fallbackVault.pages) &&
+          fallbackVault.pages.length > 0
+        ) {
           applyLoadedData(
-            vault.pages as ChapterPageItem[],
-            (vault.toc as BookTocData) || null,
+            fallbackVault.pages as ChapterPageItem[],
+            (fallbackVault.toc as BookTocData) || null,
             true
           );
           return;
         }
-        if (vault.found && vault.expired) {
-          setOfflineErrorBanner(vault.message || null);
+        setPages([]);
+        setBookToc(null);
+        setReadingFromOfflineVault(false);
+        if (fallbackVault.found && fallbackVault.expired) {
+          setOfflineErrorBanner(fallbackVault.message || null);
+        } else {
+          setOfflineErrorBanner(
+            "আপনি এখন অফলাইনে আছেন। এই বইটি অফলাইনে সেভ করা নেই। বইটি পড়তে বা অফলাইনে ডাউনলোড করতে ইন্টারনেট সংযোগ চালু করুন।"
+          );
         }
         setFetching(false);
       }
@@ -503,7 +550,7 @@ function ReaderInner() {
     const timer = setTimeout(async () => {
       setSearchingGlobal(true);
 
-      const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+      const isOffline = !isDeviceOnline();
       if (isOffline) {
         const localHits = await searchOfflineVaultBooks({
           query: q,
@@ -929,9 +976,9 @@ function ReaderInner() {
         }}
       />
 
-      {/* Minimal Top Bar (Borderless for seamless full-screen status bar) */}
+      {/* Minimal Top Bar (Fixed at top: hides on scroll down, shows on scroll up or tap) */}
       <header
-        className={`sticky top-0 z-30 px-4 sm:px-8 h-12 sm:h-14 flex items-center justify-between transition-all duration-300 ease-in-out ${
+        className={`fixed top-0 inset-x-0 z-30 px-4 sm:px-8 h-12 sm:h-14 flex items-center justify-between transition-all duration-300 ease-in-out ${
           isHeaderVisible
             ? "translate-y-0 opacity-100"
             : "-translate-y-full opacity-0 pointer-events-none"
@@ -945,6 +992,10 @@ function ReaderInner() {
       >
         <Link
           href="/"
+          onClick={(e) => {
+            e.preventDefault();
+            navigateOfflineSafe("/");
+          }}
           className="flex items-center gap-1 text-xs sm:text-sm font-medium opacity-70 active:opacity-100 py-1"
         >
           <ChevronLeft size={17} />
@@ -1016,7 +1067,7 @@ function ReaderInner() {
         onClick={() => {
           if (!isHeaderVisible) setIsHeaderVisible(true);
         }}
-        className="max-w-[650px] sm:max-w-2xl md:max-w-3xl lg:max-w-4xl mx-auto px-4 sm:px-10 pt-5 sm:pt-10 pb-36"
+        className="max-w-[650px] sm:max-w-2xl md:max-w-3xl lg:max-w-4xl mx-auto px-4 sm:px-10 pt-16 sm:pt-20 pb-36"
       >
         {offlineToastMsg && (
           <div className="mb-5 bg-[#141413] text-[#FAF9F6] rounded-2xl px-4 py-3 text-xs font-bold flex items-center justify-between gap-3 shadow-md">
@@ -1036,11 +1087,55 @@ function ReaderInner() {
           </div>
         )}
 
+        {(currentBookAccessInfo.badgeType === "free" ||
+          currentBookAccessInfo.badgeType === "timed") && (
+          <div
+            className={`mb-5 rounded-2xl px-4 py-2.5 border flex flex-wrap items-center justify-between gap-2.5 text-xs shadow-2xs ${
+              currentBookAccessInfo.badgeType === "free"
+                ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-950 dark:text-emerald-200"
+                : "bg-amber-500/10 border-amber-500/25 text-amber-950 dark:text-amber-200"
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-extrabold truncate">
+                {currentBookAccessInfo.badgeType === "free" ? "🎁 ফ্রি অ্যাক্সেস" : "⏳ টাইমড অ্যাক্সেস"} • বই {currentChapter.bookNumber} ({currentChapter.titleBn}):
+              </span>
+              <span className="font-mono font-bold px-2 py-0.5 rounded-full bg-black/10 dark:bg-white/10 shrink-0">
+                {currentBookAccessInfo.countdownTextBn ||
+                  currentBookAccessInfo.badgeTextBn}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigateToUnlockOrLogin(chapterIndex)}
+              className="text-[11px] font-bold underline underline-offset-2 cursor-pointer shrink-0 hover:opacity-80"
+            >
+              কোড দিয়ে স্থায়ী আনলক করুন →
+            </button>
+          </div>
+        )}
+
         {offlineErrorBanner && (
-          <div className="mb-6 bg-white border border-black/15 rounded-2xl p-4 text-center space-y-2 shadow-xs">
-            <p className="text-xs font-bold text-[#141413]">
+          <div className="my-8 bg-white dark:bg-zinc-900 border border-black/15 dark:border-white/15 rounded-3xl p-6 text-center space-y-4 shadow-md max-w-md mx-auto">
+            <p className="text-xs sm:text-sm font-bold text-[#141413] dark:text-white leading-relaxed">
               {offlineErrorBanner}
             </p>
+            <div className="flex items-center justify-center gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => navigateOfflineSafe("/")}
+                className="px-4 py-2 rounded-full border border-black/15 dark:border-white/20 text-xs font-bold cursor-pointer"
+              >
+                হোমে ফিরে যান
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 rounded-full bg-[#141413] text-white dark:bg-white dark:text-black text-xs font-bold cursor-pointer"
+              >
+                পুনরায় চেষ্টা করুন
+              </button>
+            </div>
           </div>
         )}
 
@@ -1054,8 +1149,8 @@ function ReaderInner() {
             {currentChapter.titleBn}
           </h1>
 
-          {/* Section Pills (ক, খ, গ বিভাগ) */}
-          {currentChapter.sections && (
+          {/* Section Pills (ক, খ, গ বিভাগ) — only show when book content is available */}
+          {!offlineErrorBanner && pages.length > 0 && currentChapter.sections && (
             <div className="flex items-center justify-center gap-1.5 sm:gap-2 mt-4 flex-wrap">
               {currentChapter.sections.map((sec, idx) => {
                 const isSecLocked = !currentBookUnlocked && idx > 0;
@@ -1100,7 +1195,7 @@ function ReaderInner() {
             <div className="animate-spin w-6 h-6 border-2 border-current border-t-transparent rounded-full mx-auto" />
             <p className="text-xs tracking-widest uppercase">লোড হচ্ছে...</p>
           </div>
-        ) : (
+        ) : pages.length > 0 ? (
           <div
             className="editorial-book-content"
             style={{ fontSize: `${fontSize}px` }}
@@ -1206,7 +1301,7 @@ function ReaderInner() {
               </div>
             )}
           </div>
-        )}
+        ) : null}
       </main>
 
       {/* Bottom Soft Fade Blur */}
@@ -1345,14 +1440,8 @@ function ReaderInner() {
         </div>
       )}
 
-      {/* Mobile-Fitted iOS Floating Bottom Pill Dock */}
-      <div
-        className={`fixed bottom-4 sm:bottom-5 app-bottom-dock inset-x-0 z-40 flex items-center justify-center px-2 pointer-events-none transition-all duration-300 ease-in-out ${
-          isHeaderVisible
-            ? "translate-y-0 opacity-100"
-            : "translate-y-24 opacity-0"
-        }`}
-      >
+      {/* Mobile-Fitted iOS Floating Bottom Pill Dock (Always stays visible; never hides on scroll) */}
+      <div className="fixed bottom-4 sm:bottom-5 app-bottom-dock inset-x-0 z-40 flex items-center justify-center px-2 pointer-events-none">
         <div className="flex items-center gap-1 sm:gap-2 max-w-full pointer-events-auto">
           {/* Home Circle Button */}
           <button
@@ -1924,11 +2013,13 @@ function ReaderInner() {
       {/* Dynamic Offline Download Progress Animation */}
       <OfflineDownloadModal
         isOpen={showOfflineDownloadAnim}
+        isCompleted={offlineDownloadDone}
         bookNumber={currentChapter.bookNumber}
         bookTitle={currentChapter.titleBn}
         totalPages={currentChapter.endPage - currentChapter.startPage + 1}
         onComplete={() => {
           setShowOfflineDownloadAnim(false);
+          setOfflineDownloadDone(false);
           if (offlinePendingMsg) {
             setOfflineToastMsg(offlinePendingMsg);
             setOfflinePendingMsg(null);

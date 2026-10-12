@@ -3,6 +3,8 @@ import {
   getSiteSettings,
   verifyUserActiveSession,
   redeemUnlockCodeForUser,
+  getGlobalFreeSubjectIds,
+  getPermanentlyUnlockedSubjects,
   SUBJECT_PRICE_BDT,
 } from "@/lib/server/store";
 
@@ -26,36 +28,58 @@ export async function GET(req: NextRequest) {
     req.cookies.get("ebook_session_token")?.value ||
     null;
 
+  const nowMs = Date.now();
+  const serverTime = new Date(nowMs).toISOString();
   const settings = await getSiteSettings();
+  const globalFreeSubjects = getGlobalFreeSubjectIds(settings, nowMs);
 
   if (uid && sessionToken) {
     const check = await verifyUserActiveSession(uid, sessionToken);
     if (!check.valid) {
       return NextResponse.json({
-        unlocked: false,
-        unlockedSubjects: [],
+        unlocked: globalFreeSubjects.length > 0,
+        unlockedSubjects: globalFreeSubjects,
+        permanentlyUnlockedSubjects: [],
+        globalFreeSubjects,
+        subjectAccess: {},
         sessionInvalidated: Boolean(check.sessionInvalidated),
         pricePerSubject: SUBJECT_PRICE_BDT,
         settings,
+        serverTime,
       });
     }
 
+    const permanentSubjects = getPermanentlyUnlockedSubjects(check.user);
+    const effectiveUnlocked = Array.from(
+      new Set([...check.unlockedSubjects, ...globalFreeSubjects])
+    );
+
     return NextResponse.json({
-      unlocked: check.unlockedSubjects.length > 0,
+      unlocked: effectiveUnlocked.length > 0,
       unlockedSubjects: check.unlockedSubjects,
+      effectiveUnlockedSubjects: effectiveUnlocked,
+      permanentlyUnlockedSubjects: permanentSubjects,
+      globalFreeSubjects,
+      subjectAccess: check.user?.subjectAccess || {},
       sessionInvalidated: false,
       code: check.user?.unlockCode || null,
       pricePerSubject: SUBJECT_PRICE_BDT,
       settings,
+      serverTime,
     });
   }
 
   return NextResponse.json({
-    unlocked: false,
+    unlocked: globalFreeSubjects.length > 0,
     unlockedSubjects: [],
+    effectiveUnlockedSubjects: globalFreeSubjects,
+    permanentlyUnlockedSubjects: [],
+    globalFreeSubjects,
+    subjectAccess: {},
     sessionInvalidated: false,
     pricePerSubject: SUBJECT_PRICE_BDT,
     settings,
+    serverTime,
   });
 }
 
@@ -129,8 +153,14 @@ export async function POST(req: NextRequest) {
         success: result.success,
         message: result.message,
         unlockedSubjects: result.unlockedSubjects || [],
+        permanentlyUnlockedSubjects: result.permanentlyUnlockedSubjects || [],
+        subjectAccess: result.subjectAccess || {},
         newlyUnlockedSubjects: result.newlyUnlockedSubjects || [],
         code: result.code || null,
+        isPermanentUnlock: result.isPermanentUnlock,
+        accessDurationDays: result.accessDurationDays,
+        accessExpiresAt: result.accessExpiresAt,
+        serverTime: result.serverTime || new Date().toISOString(),
       },
       { status: result.status }
     );

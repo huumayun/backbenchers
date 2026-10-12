@@ -14,18 +14,87 @@ import { loginUser, registerUser, logoutUser } from "@/lib/firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { BOOK_INFO, CHAPTERS } from "@/lib/book/chapters";
 import {
+  isDeviceOnline,
   getSavedOfflineChaptersSync,
+  verifyOfflineChaptersInVault,
   saveBookForOfflineApp,
   removeBookFromOfflineApp,
   wipeAllOfflineBooks,
   renewAllOfflineLeasesOnServer,
 } from "@/lib/offline/offlineStore";
 import { installCapacitorLocalApiBridge } from "@/lib/capacitor/localApiBridge";
+import type {
+  SubjectFreeWindow,
+  UserSubjectAccessRecord,
+  NoticeItem,
+} from "@/lib/server/store";
+export type { SubjectFreeWindow, UserSubjectAccessRecord, NoticeItem };
 
 if (typeof window !== "undefined") {
   installCapacitorLocalApiBridge();
 }
 
+const BN_DIGITS = ["০", "১", "২", "৩", "৪", "৫", "৬", "৭", "৮", "৯"];
+export function toBengaliDigits(num: number | string): string {
+  return String(num).replace(/\d/g, (d) => BN_DIGITS[Number(d)] || d);
+}
+
+export function formatRemainingDurationBn(
+  expiresAt?: string | null,
+  nowMs: number = Date.now()
+): {
+  expired: boolean;
+  textBn: string;
+  days: number;
+  hours: number;
+  minutes: number;
+} {
+  if (!expiresAt) {
+    return { expired: false, textBn: "", days: 0, hours: 0, minutes: 0 };
+  }
+  const expMs = Date.parse(expiresAt);
+  if (isNaN(expMs) || expMs <= nowMs) {
+    return { expired: true, textBn: "মেয়াদ শেষ", days: 0, hours: 0, minutes: 0 };
+  }
+  const diffMs = expMs - nowMs;
+  const totalMinutes = Math.max(1, Math.floor(diffMs / (1000 * 60)));
+  const totalHours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  const minutes = totalMinutes % 60;
+
+  if (days === 0 && hours === 0) {
+    return {
+      expired: false,
+      textBn: `আর ০ দিন ০ ঘণ্টা (${toBengaliDigits(minutes)} মি.) বাকি`,
+      days: 0,
+      hours: 0,
+      minutes,
+    };
+  }
+
+  return {
+    expired: false,
+    textBn: `আর ${toBengaliDigits(days)} দিন ${toBengaliDigits(hours)} ঘণ্টা বাকি`,
+    days,
+    hours,
+    minutes,
+  };
+}
+
+export interface SubjectAccessInfo {
+  subjectId: string;
+  isUnlocked: boolean;
+  isPermanent: boolean;
+  isTimedUserAccess: boolean;
+  isGlobalFree: boolean;
+  isGlobalFreeUnlimited: boolean;
+  expiresAt: string | null;
+  freeWindowEndAt: string | null;
+  badgeType: "permanent" | "timed" | "free" | "locked";
+  badgeTextBn: string;
+  countdownTextBn: string | null;
+}
 
 export interface UserProfile {
   uid: string;
@@ -33,9 +102,10 @@ export interface UserProfile {
   displayName: string;
   hasAccess: boolean;
   unlockedSubjects?: string[];
+  permanentlyUnlockedSubjects?: string[];
   role: "reader" | "admin";
   unlockCode?: string | null;
-  subjectAccess?: Record<string, { unlockCode?: string; unlockDate?: string }>;
+  subjectAccess?: Record<string, UserSubjectAccessRecord>;
   redeemedCodes?: string[];
 }
 
@@ -53,6 +123,8 @@ export interface SiteSettingsClient {
   contactTelegram: string;
   freePagesLimit: number;
   announcement: string;
+  freeSubjects?: Record<string, SubjectFreeWindow>;
+  notices?: NoticeItem[];
 }
 
 export interface LocalBookmark {
@@ -84,13 +156,19 @@ interface AuthContextType {
   hasAccess: boolean;
   hasAllSubjectsUnlocked: boolean;
   unlockedSubjects: string[];
+  permanentlyUnlockedSubjects: string[];
+  globalFreeSubjects: string[];
   isSubjectUnlocked: (subjectIdOrChapterIndex: string | number) => boolean;
+  isSubjectPermanentlyUnlocked: (subjectIdOrChapterIndex: string | number) => boolean;
+  getSubjectAccessInfo: (subjectIdOrChapterIndex: string | number) => SubjectAccessInfo;
   isAdmin: boolean;
   deviceId: string;
   accessToken: string | null;
   sessionToken: string | null;
   unlockedCode: string | null;
   settings: SiteSettingsClient;
+  notices: NoticeItem[];
+  serverNowMs: number;
   showUnlockModal: boolean;
   setShowUnlockModal: (open: boolean) => void;
   sessionAlertMessage: string | null;
@@ -140,6 +218,22 @@ const DEFAULT_SETTINGS: SiteSettingsClient = {
   freePagesLimit: BOOK_INFO.freePagesLimit,
   announcement:
     "আপনার পছন্দের বিষয় সিলেক্ট করে মেসেজ পাঠিয়ে আনলক কোড সংগ্রহ করুন।",
+  freeSubjects: {},
+  notices: [],
+};
+
+const DEFAULT_ACCESS_INFO: SubjectAccessInfo = {
+  subjectId: "",
+  isUnlocked: false,
+  isPermanent: false,
+  isTimedUserAccess: false,
+  isGlobalFree: false,
+  isGlobalFreeUnlimited: false,
+  expiresAt: null,
+  freeWindowEndAt: null,
+  badgeType: "locked",
+  badgeTextBn: "লকড",
+  countdownTextBn: null,
 };
 
 const AuthContext = createContext<AuthContextType>({
@@ -150,13 +244,19 @@ const AuthContext = createContext<AuthContextType>({
   hasAccess: false,
   hasAllSubjectsUnlocked: false,
   unlockedSubjects: [],
+  permanentlyUnlockedSubjects: [],
+  globalFreeSubjects: [],
   isSubjectUnlocked: () => false,
+  isSubjectPermanentlyUnlocked: () => false,
+  getSubjectAccessInfo: () => DEFAULT_ACCESS_INFO,
   isAdmin: false,
   deviceId: "",
   accessToken: null,
   sessionToken: null,
   unlockedCode: null,
   settings: DEFAULT_SETTINGS,
+  notices: [],
+  serverNowMs: Date.now(),
   showUnlockModal: false,
   setShowUnlockModal: () => {},
   sessionAlertMessage: null,
@@ -204,6 +304,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [unlockedSubjects, setUnlockedSubjects] = useState<string[]>([]);
+  const [permanentlyUnlockedSubjects, setPermanentlyUnlockedSubjects] = useState<
+    string[]
+  >([]);
+  const [subjectAccessMap, setSubjectAccessMap] = useState<
+    Record<string, UserSubjectAccessRecord>
+  >({});
+  const [serverTimeOffsetMs, setServerTimeOffsetMs] = useState<number>(0);
+  const [clockTick, setClockTick] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [deviceId, setDeviceId] = useState("");
   const [sessionToken, setSessionToken] = useState<string | null>(null);
@@ -227,6 +335,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   >({});
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const updateServerTimeOffset = useCallback((isoServerTime?: string | null) => {
+    if (!isoServerTime) return;
+    const parsed = Date.parse(isoServerTime);
+    if (!isNaN(parsed)) {
+      const offset = parsed - Date.now();
+      setServerTimeOffsetMs(offset);
+      try {
+        localStorage.setItem("ebook_server_time_offset", String(offset));
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
   const clearSessionAlert = useCallback(() => {
     setSessionAlertMessage(null);
   }, []);
@@ -248,6 +370,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setProfile(null);
     setUnlockedSubjects([]);
+    setPermanentlyUnlockedSubjects([]);
+    setSubjectAccessMap({});
     setSessionToken(null);
     setUnlockedCode(null);
     try {
@@ -265,11 +389,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     );
   }, []);
 
+  const refreshSiteSettings = useCallback(async () => {
+    if (!isDeviceOnline()) return;
+    try {
+      const res = await fetch("/api/unlock", { cache: "no-store" });
+      if (!res.ok) return;
+      const d = await res.json();
+      if (d.serverTime) {
+        updateServerTimeOffset(d.serverTime);
+      }
+      if (d.settings) {
+        setSettings((prev) => {
+          const next = { ...prev, ...d.settings };
+          try {
+            localStorage.setItem("ebook_site_settings", JSON.stringify(next));
+          } catch {
+            // ignore
+          }
+          return next;
+        });
+      }
+    } catch {
+      // ignore network error
+    }
+  }, [updateServerTimeOffset]);
+
   // Verify active session & fetch unlocked subjects from server
   const verifySessionWithServer = useCallback(
     async (uid: string, token: string) => {
       if (!uid || !token) return;
-      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+      if (!isDeviceOnline()) return;
       try {
         const res = await fetch(
           `/api/auth?uid=${encodeURIComponent(uid)}&sessionToken=${encodeURIComponent(
@@ -286,6 +435,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (res.status === 401) {
           const data = await res.json().catch(() => ({}));
+          if (data.serverTime) updateServerTimeOffset(data.serverTime);
           if (data.sessionInvalidated) {
             handleSessionInvalidated(data.message);
           }
@@ -294,68 +444,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (res.ok) {
           const data = await res.json();
+          if (data.serverTime) updateServerTimeOffset(data.serverTime);
           if (data.sessionInvalidated) {
             handleSessionInvalidated(data.message);
             return;
           }
+
+          const incomingAccess =
+            data.subjectAccess && typeof data.subjectAccess === "object"
+              ? (data.subjectAccess as Record<string, UserSubjectAccessRecord>)
+              : data.user?.subjectAccess &&
+                typeof data.user.subjectAccess === "object"
+              ? (data.user.subjectAccess as Record<string, UserSubjectAccessRecord>)
+              : null;
+
+          if (incomingAccess) {
+            setSubjectAccessMap((prev) => ({ ...prev, ...incomingAccess }));
+          }
+
+          if (Array.isArray(data.permanentlyUnlockedSubjects)) {
+            const incomingPerm = data.permanentlyUnlockedSubjects as string[];
+            setPermanentlyUnlockedSubjects((prev) =>
+              Array.from(new Set([...prev, ...incomingPerm]))
+            );
+          }
+
           if (Array.isArray(data.unlockedSubjects)) {
             const incoming = data.unlockedSubjects as string[];
-
-            setUnlockedSubjects((prev) => {
-              const merged = Array.from(new Set([...prev, ...incoming]));
-              const prevSorted = [...prev].sort();
-              const mergedSorted = [...merged].sort();
-
-              // Self-heal Firestore if local state has unlocked subjects that a cold Vercel instance missed
-              if (merged.length > incoming.length) {
-                setDoc(
-                  doc(db, "users", uid),
-                  {
-                    uid,
-                    unlockedSubjects: merged,
-                    hasAccess: merged.length > 0,
-                  },
-                  { merge: true }
-                ).catch(() => {});
-                setDoc(
-                  doc(db, "user_reading_data", uid),
-                  {
-                    uid,
-                    unlockedSubjects: merged,
-                    updatedAt: new Date().toISOString(),
-                  },
-                  { merge: true }
-                ).catch(() => {});
-              }
-
-              if (
-                prevSorted.length === mergedSorted.length &&
-                prevSorted.every((val, idx) => val === mergedSorted[idx])
-              ) {
-                return prev;
-              }
-              return merged;
-            });
+            setUnlockedSubjects(incoming);
 
             setProfile((prev) => {
               if (!prev) return prev;
-              const prevList = Array.isArray(prev.unlockedSubjects)
-                ? prev.unlockedSubjects
-                : [];
-              const merged = Array.from(new Set([...prevList, ...incoming]));
-              const prevSorted = [...prevList].sort();
-              const mergedSorted = [...merged].sort();
-              if (
-                prevSorted.length === mergedSorted.length &&
-                prevSorted.every((val, idx) => val === mergedSorted[idx]) &&
-                prev.hasAccess === merged.length > 0
-              ) {
-                return prev;
-              }
               const updated: UserProfile = {
                 ...prev,
-                unlockedSubjects: merged,
-                hasAccess: merged.length > 0,
+                unlockedSubjects: incoming,
+                permanentlyUnlockedSubjects: Array.isArray(
+                  data.permanentlyUnlockedSubjects
+                )
+                  ? data.permanentlyUnlockedSubjects
+                  : prev.permanentlyUnlockedSubjects,
+                subjectAccess: incomingAccess
+                  ? { ...(prev.subjectAccess || {}), ...incomingAccess }
+                  : prev.subjectAccess,
+                hasAccess: incoming.length > 0,
               };
               try {
                 localStorage.setItem(
@@ -373,7 +504,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // ignore network hiccup
       }
     },
-    [handleSessionInvalidated]
+    [handleSessionInvalidated, updateServerTimeOffset]
   );
 
   // Sync user's bookmarks & reading progress to Firebase Firestore + /api/user-data when logged in
@@ -389,7 +520,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       activeToken?: string | null
     ) => {
       if (!uid) return;
-      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+      if (!isDeviceOnline()) return;
       const now = new Date().toISOString();
 
       try {
@@ -437,11 +568,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const syncUserDataFromCloud = useCallback(
     async (uid: string, activeToken?: string | null) => {
       if (!uid) return;
-      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+      if (!isDeviceOnline()) return;
       let cloudBm: LocalBookmark[] = [];
       let cloudProg: ReadingProgressData | null = null;
       let cloudPerBook: Record<string, ReadingProgressData> = {};
       let cloudUnlocked: string[] = [];
+      let cloudSubjectAccess: Record<string, UserSubjectAccessRecord> | null =
+        null;
 
       // 1. Check /api/user-data first (which merges Firestore + server store + verifies session)
       try {
@@ -511,6 +644,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         if (uSnap.exists()) {
           const u = uSnap.data();
+          if (u.subjectAccess && typeof u.subjectAccess === "object") {
+            cloudSubjectAccess = u.subjectAccess as Record<
+              string,
+              UserSubjectAccessRecord
+            >;
+          }
           if (Array.isArray(u.unlockedSubjects)) {
             cloudUnlocked = Array.from(
               new Set([...cloudUnlocked, ...(u.unlockedSubjects as string[])])
@@ -521,28 +660,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // ignore
       }
 
-      if (cloudUnlocked.length > 0) {
-        setUnlockedSubjects((prev) => {
-          const merged = Array.from(new Set([...prev, ...cloudUnlocked]));
-          const prevSorted = [...prev].sort();
-          const mergedSorted = [...merged].sort();
-          if (
-            prevSorted.length === mergedSorted.length &&
-            prevSorted.every((v, idx) => v === mergedSorted[idx])
-          ) {
-            return prev;
-          }
-          return merged;
-        });
+      if (cloudSubjectAccess) {
+        setSubjectAccessMap((prev) => ({ ...prev, ...cloudSubjectAccess! }));
+      }
+
+      const effectiveNowMs = Date.now() + serverTimeOffsetMs;
+      const filteredCloudUnlocked = cloudUnlocked.filter((id) => {
+        const rec = cloudSubjectAccess?.[id];
+        if (!rec) return true;
+        if (rec.status === "revoked") return false;
+        if (rec.isPermanent === true || !rec.expiresAt) return true;
+        const expMs = Date.parse(rec.expiresAt);
+        return !isNaN(expMs) && effectiveNowMs < expMs;
+      });
+
+      if (filteredCloudUnlocked.length > 0 || cloudSubjectAccess) {
+        setUnlockedSubjects((prev) =>
+          Array.from(new Set([...prev, ...filteredCloudUnlocked]))
+        );
         setProfile((prev) => {
           if (!prev) return prev;
           const prevList = Array.isArray(prev.unlockedSubjects)
             ? prev.unlockedSubjects
             : [];
-          const merged = Array.from(new Set([...prevList, ...cloudUnlocked]));
+          const merged = Array.from(
+            new Set([...prevList, ...filteredCloudUnlocked])
+          );
           const updated: UserProfile = {
             ...prev,
             unlockedSubjects: merged,
+            subjectAccess: cloudSubjectAccess
+              ? { ...(prev.subjectAccess || {}), ...cloudSubjectAccess }
+              : prev.subjectAccess,
             hasAccess: merged.length > 0,
           };
           try {
@@ -629,7 +778,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         activeToken
       );
     },
-    [pushUserDataToCloud, handleSessionInvalidated]
+    [pushUserDataToCloud, handleSessionInvalidated, serverTimeOffsetMs]
   );
 
   // Load initial state on mount
@@ -641,6 +790,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let initialSessionToken: string | null = null;
 
     try {
+      const savedOffset = localStorage.getItem("ebook_server_time_offset");
+      if (savedOffset && !isNaN(Number(savedOffset))) {
+        setServerTimeOffsetMs(Number(savedOffset));
+      }
+
+      const savedSettings = localStorage.getItem("ebook_site_settings");
+      if (savedSettings) {
+        setSettings((prev) => ({ ...prev, ...JSON.parse(savedSettings) }));
+      }
+
       const savedBm = localStorage.getItem("ebook_bookmarks");
       if (savedBm) setBookmarks(JSON.parse(savedBm));
 
@@ -663,22 +822,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (Array.isArray(initialProfile?.unlockedSubjects)) {
           setUnlockedSubjects(initialProfile.unlockedSubjects);
         }
+        if (Array.isArray(initialProfile?.permanentlyUnlockedSubjects)) {
+          setPermanentlyUnlockedSubjects(
+            initialProfile.permanentlyUnlockedSubjects
+          );
+        }
+        if (
+          initialProfile?.subjectAccess &&
+          typeof initialProfile.subjectAccess === "object"
+        ) {
+          setSubjectAccessMap(initialProfile.subjectAccess);
+        }
         if (initialProfile?.uid) {
           setOfflineBookIndices(getSavedOfflineChaptersSync(initialProfile.uid));
+          verifyOfflineChaptersInVault(initialProfile.uid)
+            .then((validList) => setOfflineBookIndices(validList))
+            .catch(() => {});
         }
       }
     } catch {
       // ignore
     }
 
-    // Load site settings when online
-    if (typeof navigator === "undefined" || navigator.onLine) {
-      fetch("/api/unlock")
-        .then((r) => r.json())
-        .then((d) => {
-          if (d.settings) setSettings((prev) => ({ ...prev, ...d.settings }));
-        })
-        .catch(() => {});
+    // Load site settings & free windows when online
+    if (isDeviceOnline()) {
+      refreshSiteSettings();
     }
 
     // Register Service Worker & warm offline cache with all loaded scripts/styles & routes
@@ -731,6 +899,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const onBackOnline = () => {
       try {
+        refreshSiteSettings();
         const profRaw = localStorage.getItem("ebook_user_profile");
         const tok = localStorage.getItem("ebook_session_token");
         const prof = profRaw ? JSON.parse(profRaw) : null;
@@ -764,19 +933,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("online", onBackOnline);
       unsubscribe();
     };
-  }, [verifySessionWithServer, syncUserDataFromCloud, pushUserDataToCloud]);
+  }, [
+    verifySessionWithServer,
+    syncUserDataFromCloud,
+    pushUserDataToCloud,
+    refreshSiteSettings,
+  ]);
 
-  // Periodic Single-Session Heartbeat (checks every 15s and on window focus)
+  // Periodic Single-Session Heartbeat + Live Free-Window/Countdown Ticker
   useEffect(() => {
     const activeUid = profile?.uid || user?.uid;
-    if (!activeUid || !sessionToken) return;
 
     const interval = setInterval(() => {
-      verifySessionWithServer(activeUid, sessionToken);
+      setClockTick((t) => t + 1);
+      refreshSiteSettings();
+      if (activeUid && sessionToken) {
+        verifySessionWithServer(activeUid, sessionToken);
+      }
     }, 15000);
 
     const onFocus = () => {
-      verifySessionWithServer(activeUid, sessionToken);
+      setClockTick((t) => t + 1);
+      refreshSiteSettings();
+      if (activeUid && sessionToken) {
+        verifySessionWithServer(activeUid, sessionToken);
+      }
     };
 
     window.addEventListener("focus", onFocus);
@@ -784,7 +965,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
-  }, [profile?.uid, user?.uid, sessionToken, verifySessionWithServer]);
+  }, [
+    profile?.uid,
+    user?.uid,
+    sessionToken,
+    verifySessionWithServer,
+    refreshSiteSettings,
+  ]);
 
   const signIn = async (
     email: string,
@@ -805,6 +992,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) updateServerTimeOffset(data.serverTime);
 
       if (res.ok && data.success && data.user) {
         const userUnlocked: string[] = Array.isArray(data.unlockedSubjects)
@@ -812,6 +1000,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           : Array.isArray(data.user.unlockedSubjects)
           ? data.user.unlockedSubjects
           : [];
+        const permUnlocked: string[] = Array.isArray(
+          data.permanentlyUnlockedSubjects
+        )
+          ? data.permanentlyUnlockedSubjects
+          : [];
+        const accessRecs: Record<string, UserSubjectAccessRecord> =
+          data.subjectAccess || data.user.subjectAccess || {};
 
         const userProf: UserProfile = {
           uid: data.user.uid,
@@ -819,12 +1014,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           displayName: data.user.displayName,
           hasAccess: userUnlocked.length > 0,
           unlockedSubjects: userUnlocked,
+          permanentlyUnlockedSubjects: permUnlocked,
+          subjectAccess: accessRecs,
           role: data.user.role || "reader",
           unlockCode: data.user.unlockCode || null,
         };
 
         setProfile(userProf);
         setUnlockedSubjects(userUnlocked);
+        setPermanentlyUnlockedSubjects(permUnlocked);
+        setSubjectAccessMap(accessRecs);
         setOfflineBookIndices(getSavedOfflineChaptersSync(userProf.uid));
         localStorage.setItem("ebook_user_profile", JSON.stringify(userProf));
 
@@ -855,10 +1054,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }),
         });
         const sessData = await sessRes.json();
+        if (sessData.serverTime) updateServerTimeOffset(sessData.serverTime);
 
         const userUnlocked: string[] = Array.isArray(sessData.unlockedSubjects)
           ? sessData.unlockedSubjects
           : [];
+        const permUnlocked: string[] = Array.isArray(
+          sessData.permanentlyUnlockedSubjects
+        )
+          ? sessData.permanentlyUnlockedSubjects
+          : [];
+        const accessRecs: Record<string, UserSubjectAccessRecord> =
+          sessData.subjectAccess || {};
+
         const userProf: UserProfile = {
           uid: fbUser.uid,
           email: fbUser.email || email.trim(),
@@ -866,10 +1074,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             fbUser.displayName || email.trim().split("@")[0] || "পাঠক",
           hasAccess: userUnlocked.length > 0,
           unlockedSubjects: userUnlocked,
+          permanentlyUnlockedSubjects: permUnlocked,
+          subjectAccess: accessRecs,
           role: "reader",
         };
         setProfile(userProf);
         setUnlockedSubjects(userUnlocked);
+        setPermanentlyUnlockedSubjects(permUnlocked);
+        setSubjectAccessMap(accessRecs);
         setOfflineBookIndices(getSavedOfflineChaptersSync(fbUser.uid));
         localStorage.setItem("ebook_user_profile", JSON.stringify(userProf));
         if (sessData.sessionToken) {
@@ -928,6 +1140,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) updateServerTimeOffset(data.serverTime);
       if (!res.ok || !data.success) {
         return {
           success: false,
@@ -941,10 +1154,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         displayName: data.user.displayName,
         hasAccess: false,
         unlockedSubjects: [],
+        permanentlyUnlockedSubjects: [],
+        subjectAccess: {},
         role: "reader",
       };
       setProfile(userProf);
       setUnlockedSubjects([]);
+      setPermanentlyUnlockedSubjects([]);
+      setSubjectAccessMap({});
       setOfflineBookIndices([]);
       localStorage.setItem("ebook_user_profile", JSON.stringify(userProf));
 
@@ -988,6 +1205,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setProfile(null);
     setUnlockedSubjects([]);
+    setPermanentlyUnlockedSubjects([]);
+    setSubjectAccessMap({});
     setSessionToken(null);
     setUnlockedCode(null);
     try {
@@ -1000,6 +1219,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const refreshProfile = async () => {
+    await refreshSiteSettings();
     const activeUid = profile?.uid || user?.uid;
     if (activeUid && sessionToken) {
       await verifySessionWithServer(activeUid, sessionToken);
@@ -1036,6 +1256,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }),
       });
       const data = await res.json();
+      if (data.serverTime) updateServerTimeOffset(data.serverTime);
 
       if (res.status === 401 && data.sessionInvalidated) {
         handleSessionInvalidated(data.message);
@@ -1051,7 +1272,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const mergedList: string[] = Array.isArray(data.unlockedSubjects)
           ? data.unlockedSubjects
           : [];
+        const permList: string[] = Array.isArray(
+          data.permanentlyUnlockedSubjects
+        )
+          ? data.permanentlyUnlockedSubjects
+          : [];
+        const nextAccessMap: Record<string, UserSubjectAccessRecord> =
+          data.subjectAccess && typeof data.subjectAccess === "object"
+            ? { ...subjectAccessMap, ...data.subjectAccess }
+            : subjectAccessMap;
+
         setUnlockedSubjects(mergedList);
+        if (permList.length > 0) {
+          setPermanentlyUnlockedSubjects((prev) =>
+            Array.from(new Set([...prev, ...permList]))
+          );
+        }
+        setSubjectAccessMap(nextAccessMap);
 
         if (data.code) {
           localStorage.setItem("ebook_unlocked_code", data.code);
@@ -1062,6 +1299,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ...profile,
             hasAccess: mergedList.length > 0,
             unlockedSubjects: mergedList,
+            permanentlyUnlockedSubjects: Array.from(
+              new Set([
+                ...(profile.permanentlyUnlockedSubjects || []),
+                ...permList,
+              ])
+            ),
+            subjectAccess: nextAccessMap,
             unlockCode: data.code || profile.unlockCode,
           };
           setProfile(updatedProfile);
@@ -1210,19 +1454,179 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [profile?.uid, user?.uid, sessionToken, pushUserDataToCloud]
   );
 
-  const isSubjectUnlocked = useCallback(
+  void clockTick;
+  const serverNowMs = Date.now() + serverTimeOffsetMs;
+
+  const resolveSubjectId = useCallback(
+    (subjectIdOrChapterIndex: string | number): string => {
+      if (typeof subjectIdOrChapterIndex === "number") {
+        return CHAPTERS[subjectIdOrChapterIndex]?.id || "";
+      }
+      return subjectIdOrChapterIndex;
+    },
+    []
+  );
+
+  const isSubjectPermanentlyUnlocked = useCallback(
     (subjectIdOrChapterIndex: string | number): boolean => {
       if (profile?.role === "admin") return true;
-      const effectiveList = Array.from(
+      const subId = resolveSubjectId(subjectIdOrChapterIndex);
+      if (!subId) return false;
+
+      if (permanentlyUnlockedSubjects.includes(subId)) return true;
+
+      const rec =
+        subjectAccessMap[subId] || profile?.subjectAccess?.[subId];
+      if (rec) {
+        return (
+          rec.status === "active" &&
+          (rec.isPermanent === true || !rec.expiresAt)
+        );
+      }
+
+      // Legacy backward compatibility: if subject is in unlockedSubjects and has no timed subjectAccess record
+      const rawUnlocked = Array.from(
         new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
       );
-      if (typeof subjectIdOrChapterIndex === "number") {
-        const ch = CHAPTERS[subjectIdOrChapterIndex];
-        return Boolean(ch && effectiveList.includes(ch.id));
-      }
-      return effectiveList.includes(subjectIdOrChapterIndex);
+      return rawUnlocked.includes(subId);
     },
-    [unlockedSubjects, profile?.unlockedSubjects, profile?.role]
+    [
+      profile?.role,
+      profile?.subjectAccess,
+      profile?.unlockedSubjects,
+      permanentlyUnlockedSubjects,
+      subjectAccessMap,
+      unlockedSubjects,
+      resolveSubjectId,
+    ]
+  );
+
+  const getSubjectAccessInfo = useCallback(
+    (subjectIdOrChapterIndex: string | number): SubjectAccessInfo => {
+      const subId = resolveSubjectId(subjectIdOrChapterIndex);
+      if (!subId) return DEFAULT_ACCESS_INFO;
+
+      // 1. Permanent access ALWAYS beats timed/free access and hides free banners
+      if (isSubjectPermanentlyUnlocked(subId)) {
+        return {
+          subjectId: subId,
+          isUnlocked: true,
+          isPermanent: true,
+          isTimedUserAccess: false,
+          isGlobalFree: false,
+          isGlobalFreeUnlimited: false,
+          expiresAt: null,
+          freeWindowEndAt: null,
+          badgeType: "permanent",
+          badgeTextBn: "আনলকড",
+          countdownTextBn: null,
+        };
+      }
+
+      const nowMs = Date.now() + serverTimeOffsetMs;
+
+      // 2. Check user's timed code access
+      const rec =
+        subjectAccessMap[subId] || profile?.subjectAccess?.[subId];
+      const hasActiveTimed = Boolean(
+        rec &&
+          rec.status === "active" &&
+          rec.expiresAt &&
+          !isNaN(Date.parse(rec.expiresAt)) &&
+          Date.parse(rec.expiresAt) > nowMs
+      );
+
+      // 3. Check global free window for this subject
+      const freeWin = settings.freeSubjects?.[subId];
+      const freeStartMs = freeWin?.startAt ? Date.parse(freeWin.startAt) : 0;
+      const freeEndMs = freeWin?.endAt ? Date.parse(freeWin.endAt) : null;
+      const isGlobalFreeActive = Boolean(
+        freeWin &&
+          freeWin.enabled &&
+          (isNaN(freeStartMs) || freeStartMs <= nowMs) &&
+          (freeWin.isUnlimited ||
+            !freeWin.endAt ||
+            (freeEndMs !== null && !isNaN(freeEndMs) && freeEndMs > nowMs))
+      );
+
+      if (hasActiveTimed && rec?.expiresAt) {
+        const rem = formatRemainingDurationBn(rec.expiresAt, nowMs);
+        return {
+          subjectId: subId,
+          isUnlocked: true,
+          isPermanent: false,
+          isTimedUserAccess: true,
+          isGlobalFree: isGlobalFreeActive,
+          isGlobalFreeUnlimited: Boolean(freeWin?.isUnlimited),
+          expiresAt: rec.expiresAt,
+          freeWindowEndAt: freeWin?.endAt || null,
+          badgeType: "timed",
+          badgeTextBn: rem.textBn,
+          countdownTextBn: rem.textBn,
+        };
+      }
+
+      if (isGlobalFreeActive && freeWin) {
+        if (freeWin.isUnlimited || !freeWin.endAt) {
+          return {
+            subjectId: subId,
+            isUnlocked: true,
+            isPermanent: false,
+            isTimedUserAccess: false,
+            isGlobalFree: true,
+            isGlobalFreeUnlimited: true,
+            expiresAt: null,
+            freeWindowEndAt: null,
+            badgeType: "free",
+            badgeTextBn: "ফ্রি (অনির্দিষ্টকাল)",
+            countdownTextBn: "ফ্রি (অনির্দিষ্টকাল)",
+          };
+        }
+        const rem = formatRemainingDurationBn(freeWin.endAt, nowMs);
+        return {
+          subjectId: subId,
+          isUnlocked: true,
+          isPermanent: false,
+          isTimedUserAccess: false,
+          isGlobalFree: true,
+          isGlobalFreeUnlimited: false,
+          expiresAt: freeWin.endAt,
+          freeWindowEndAt: freeWin.endAt,
+          badgeType: "free",
+          badgeTextBn: `ফ্রি • ${rem.textBn}`,
+          countdownTextBn: rem.textBn,
+        };
+      }
+
+      return {
+        subjectId: subId,
+        isUnlocked: false,
+        isPermanent: false,
+        isTimedUserAccess: false,
+        isGlobalFree: false,
+        isGlobalFreeUnlimited: false,
+        expiresAt: null,
+        freeWindowEndAt: null,
+        badgeType: "locked",
+        badgeTextBn: "লকড",
+        countdownTextBn: null,
+      };
+    },
+    [
+      resolveSubjectId,
+      isSubjectPermanentlyUnlocked,
+      serverTimeOffsetMs,
+      subjectAccessMap,
+      profile?.subjectAccess,
+      settings.freeSubjects,
+    ]
+  );
+
+  const isSubjectUnlocked = useCallback(
+    (subjectIdOrChapterIndex: string | number): boolean => {
+      return getSubjectAccessInfo(subjectIdOrChapterIndex).isUnlocked;
+    },
+    [getSubjectAccessInfo]
   );
 
   const isBookSavedOffline = useCallback(
@@ -1252,6 +1656,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           success: false,
           saved: false,
           message: "শুধুমাত্র আনলক করা বই অ্যাপের অফলাইনে সেভ করা যাবে।",
+        };
+      }
+
+      if (!offlineBookIndices.includes(chapterIndex) && !isDeviceOnline()) {
+        return {
+          success: false,
+          saved: false,
+          message:
+            "ইন্টারনেট সংযোগ নেই! বইটি অফলাইনে ডাউনলোড করতে অনুগ্রহ করে ডাটা বা Wi-Fi চালু করুন।",
         };
       }
 
@@ -1306,15 +1719,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     ]
   );
 
-  const effectiveUnlockedList = Array.from(
-    new Set([...unlockedSubjects, ...(profile?.unlockedSubjects || [])])
-  );
+  const effectiveUnlockedList = CHAPTERS.filter((ch) =>
+    getSubjectAccessInfo(ch.id).isUnlocked
+  ).map((ch) => ch.id);
+
+  const effectivePermanentList = CHAPTERS.filter((ch) =>
+    isSubjectPermanentlyUnlocked(ch.id)
+  ).map((ch) => ch.id);
+
+  const globalFreeList = CHAPTERS.filter((ch) => {
+    const win = settings.freeSubjects?.[ch.id];
+    if (!win || !win.enabled) return false;
+    const startMs = win.startAt ? Date.parse(win.startAt) : 0;
+    if (!isNaN(startMs) && startMs > serverNowMs) return false;
+    if (win.isUnlimited || !win.endAt) return true;
+    const endMs = Date.parse(win.endAt);
+    return !isNaN(endMs) && serverNowMs < endMs;
+  }).map((ch) => ch.id);
+
+  const noticesList: NoticeItem[] = Array.isArray(settings.notices)
+    ? settings.notices
+    : [];
+
   const isLoggedIn = Boolean(profile || user);
   const hasAccess =
     effectiveUnlockedList.length > 0 || profile?.role === "admin";
   const hasAllSubjectsUnlocked =
     profile?.role === "admin" ||
-    CHAPTERS.every((ch) => effectiveUnlockedList.includes(ch.id));
+    CHAPTERS.every((ch) => effectivePermanentList.includes(ch.id));
   const isAdmin = profile?.role === "admin";
 
   return (
@@ -1326,14 +1758,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         hasAccess,
         hasAllSubjectsUnlocked,
-        unlockedSubjects,
+        unlockedSubjects: effectiveUnlockedList,
+        permanentlyUnlockedSubjects: effectivePermanentList,
+        globalFreeSubjects: globalFreeList,
         isSubjectUnlocked,
+        isSubjectPermanentlyUnlocked,
+        getSubjectAccessInfo,
         isAdmin,
         deviceId,
         accessToken: sessionToken,
         sessionToken,
         unlockedCode,
         settings,
+        notices: noticesList,
+        serverNowMs,
         showUnlockModal,
         setShowUnlockModal,
         sessionAlertMessage,

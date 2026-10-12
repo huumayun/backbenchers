@@ -90,6 +90,35 @@ public class MainActivity extends BridgeActivity {
                         if (url == null || url.trim().isEmpty()) return;
                         runOnUiThread(() -> handleExternalUrl(Uri.parse(url.trim())));
                     }
+
+                    @android.webkit.JavascriptInterface
+                    public boolean isOnline() {
+                        try {
+                            android.net.ConnectivityManager cm =
+                                (android.net.ConnectivityManager) getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+                            if (cm == null) return false;
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                android.net.Network network = cm.getActiveNetwork();
+                                if (network == null) return false;
+                                android.net.NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                                if (caps == null) return false;
+                                boolean hasTransport =
+                                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                                    caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN);
+                                boolean hasInternet =
+                                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                                return hasTransport && hasInternet;
+                            } else {
+                                @SuppressWarnings("deprecation")
+                                android.net.NetworkInfo info = cm.getActiveNetworkInfo();
+                                return info != null && info.isConnected();
+                            }
+                        } catch (Exception e) {
+                            return false;
+                        }
+                    }
                 }, "AndroidNative");
             }
         }

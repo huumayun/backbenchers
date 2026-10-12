@@ -3,8 +3,8 @@
 import React, { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { useAuth } from "@/lib/context/AuthContext";
-import { CHAPTERS, BOOK_INFO } from "@/lib/book/chapters";
+import { useAuth, toBengaliDigits } from "@/lib/context/AuthContext";
+import { CHAPTERS } from "@/lib/book/chapters";
 import {
   ArrowLeft,
   ChevronLeft,
@@ -13,7 +13,6 @@ import {
   LogIn,
   UserPlus,
   KeyRound,
-  Lock,
   Unlock,
   CheckCircle2,
   Check,
@@ -22,10 +21,8 @@ import {
   Copy,
   Clock,
   BookOpen,
-  User,
   AlertCircle,
-  Sparkles,
-  ShieldCheck,
+  Gift,
 } from "lucide-react";
 import {
   buildSmartWhatsAppUrl,
@@ -42,7 +39,10 @@ function UnlockPageContent() {
 
   const {
     unlockedSubjects,
+    permanentlyUnlockedSubjects,
     isSubjectUnlocked,
+    isSubjectPermanentlyUnlocked,
+    getSubjectAccessInfo,
     unlockWithCode,
     settings,
     isLoggedIn,
@@ -53,7 +53,7 @@ function UnlockPageContent() {
     signUp,
   } = useAuth();
 
-  // Selected subjects to buy via Telegram/WhatsApp
+  // Selected subjects to buy via Telegram/WhatsApp (any subject not permanently owned)
   const [selectedToBuy, setSelectedToBuy] = useState<string[]>([]);
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -76,19 +76,19 @@ function UnlockPageContent() {
     setMounted(true);
   }, []);
 
-  // Pre-select book if arrived from reader or flipbook
+  // Pre-select book if arrived from reader or flipbook and not permanently unlocked
   useEffect(() => {
     if (preSelectedBookIdx !== null) {
       const idx = parseInt(preSelectedBookIdx, 10);
       const targetCh = CHAPTERS[idx];
-      if (targetCh && !unlockedSubjects.includes(targetCh.id)) {
+      if (targetCh && !permanentlyUnlockedSubjects.includes(targetCh.id)) {
         setSelectedToBuy([targetCh.id]);
       }
     }
-  }, [preSelectedBookIdx, unlockedSubjects]);
+  }, [preSelectedBookIdx, permanentlyUnlockedSubjects]);
 
   const toggleSelect = (subjectId: string) => {
-    if (unlockedSubjects.includes(subjectId)) return;
+    if (permanentlyUnlockedSubjects.includes(subjectId)) return;
     setSelectedToBuy((prev) =>
       prev.includes(subjectId)
         ? prev.filter((id) => id !== subjectId)
@@ -96,14 +96,16 @@ function UnlockPageContent() {
     );
   };
 
+  const nonPermanentList = CHAPTERS.filter(
+    (ch) => !isSubjectPermanentlyUnlocked(ch.id)
+  );
+
   const selectAllLocked = () => {
-    const lockedIds = CHAPTERS.map((c) => c.id).filter(
-      (id) => !unlockedSubjects.includes(id)
-    );
-    if (selectedToBuy.length === lockedIds.length) {
+    const ids = nonPermanentList.map((c) => c.id);
+    if (selectedToBuy.length === ids.length) {
       setSelectedToBuy([]);
     } else {
-      setSelectedToBuy(lockedIds);
+      setSelectedToBuy(ids);
     }
   };
 
@@ -127,7 +129,7 @@ function UnlockPageContent() {
             .join("\n")
         : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
     const priceText = `প্রতি বিষয় ৳${unitPrice}`;
-    const msg = `আসসালামু আলাইকুম, আমি Backbencher অ্যাপের নিচের বিষয়গুলো আনলক করতে চাই (${priceText}):\n${listText}\nমোট বিষয়: ${
+    const msg = `আসসালামু আলাইকুম, আমি Backbencher অ্যাপের নিচের বিষয়গুলো স্থায়ীভাবে আনলক করতে চাই (${priceText}):\n${listText}\nমোট বিষয়: ${
       selectedBooks.length || 1
     }টি • মোট ফি: ৳${totalCost || unitPrice}\nআমার অ্যাকাউন্ট ইমেইল: ${userEmail}`;
 
@@ -147,7 +149,7 @@ function UnlockPageContent() {
             .join("\n")
         : "বোটানি ৩য় বর্ষের বিষয়সমূহ";
     const priceText = `প্রতি বিষয় ৳${unitPrice}`;
-    const msg = `আসসালামু আলাইকুম, আমি Backbencher অ্যাপের নিচের বিষয়গুলো আনলক করতে চাই (${priceText}):\n${listText}\nমোট বিষয়: ${
+    const msg = `আসসালামু আলাইকুম, আমি Backbencher অ্যাপের নিচের বিষয়গুলো স্থায়ীভাবে আনলক করতে চাই (${priceText}):\n${listText}\nমোট বিষয়: ${
       selectedBooks.length || 1
     }টি • মোট ফি: ৳${totalCost || unitPrice}\nআমার অ্যাকাউন্ট ইমেইল: ${userEmail}`;
 
@@ -230,9 +232,8 @@ function UnlockPageContent() {
     }
   };
 
-  // Group chapters into unlocked vs locked
+  // Accessible subjects right now (Permanent, Timed, or Global Free)
   const unlockedList = CHAPTERS.filter((ch) => isSubjectUnlocked(ch.id));
-  const lockedList = CHAPTERS.filter((ch) => !isSubjectUnlocked(ch.id));
 
   // Loading state
   if (!mounted || authLoadingState) {
@@ -243,7 +244,7 @@ function UnlockPageContent() {
     );
   }
 
-  // If user is NOT logged in, NEVER show the unlock list or activation codes!
+  // If user is NOT logged in, prompt login/register to redeem codes
   if (!isLoggedIn) {
     return (
       <div
@@ -279,7 +280,8 @@ function UnlockPageContent() {
               {authMode === "login" ? "লগইন করুন" : "রেজিস্ট্রেশন করুন"}
             </h1>
             <p className="text-xs opacity-55 text-center mb-6">
-              বই আনলক করতে আপনার অ্যাকাউন্টে {authMode === "login" ? "লগইন" : "রেজিস্ট্রেশন"} করুন
+              কোড দিয়ে বই আনলক করতে আপনার অ্যাকাউন্টে{" "}
+              {authMode === "login" ? "লগইন" : "রেজিস্ট্রেশন"} করুন
             </p>
 
             {authError && (
@@ -347,10 +349,18 @@ function UnlockPageContent() {
                 disabled={authLoading}
                 className="w-full bg-[#111111] hover:bg-black text-white font-bold py-3 rounded-full text-xs transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shadow-lg mt-2"
               >
-                {authMode === "login" ? <LogIn size={14} /> : <UserPlus size={14} />}
+                {authMode === "login" ? (
+                  <LogIn size={14} />
+                ) : (
+                  <UserPlus size={14} />
+                )}
                 {authLoading
-                  ? (authMode === "login" ? "লগইন হচ্ছে..." : "রেজিস্ট্রেশন হচ্ছে...")
-                  : (authMode === "login" ? "লগইন করুন" : "রেজিস্ট্রেশন করুন")}
+                  ? authMode === "login"
+                    ? "লগইন হচ্ছে..."
+                    : "রেজিস্ট্রেশন হচ্ছে..."
+                  : authMode === "login"
+                  ? "লগইন করুন"
+                  : "রেজিস্ট্রেশন করুন"}
               </button>
             </form>
 
@@ -418,7 +428,7 @@ function UnlockPageContent() {
             Unlock Center
           </span>
           <span className="text-[11px] font-mono font-bold bg-amber-100 text-amber-900 border border-amber-300/80 px-2.5 py-0.5 rounded-full shrink-0 shadow-2xs">
-            {unlockedSubjects.length}/৭ আনলকড
+            {toBengaliDigits(permanentlyUnlockedSubjects.length)}/৭ স্থায়ী আনলকড
           </span>
         </div>
       </header>
@@ -447,67 +457,13 @@ function UnlockPageContent() {
 
           <div className="text-right shrink-0">
             <span className="text-xs font-bold font-mono text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-lg inline-block">
-              {unlockedSubjects.length}/৭
+              {toBengaliDigits(unlockedSubjects.length)}/৭
             </span>
-            <p className="text-[10px] text-zinc-400 font-medium mt-0.5">আনলকড</p>
+            <p className="text-[10px] text-zinc-400 font-medium mt-0.5">উন্মুক্ত</p>
           </div>
         </div>
 
-        {/* Section 1: Unlocked Subjects List */}
-        {unlockedList.length > 0 && (
-          <section className="space-y-2.5">
-            <div className="flex items-center justify-between px-1">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <Unlock size={15} className="text-emerald-600 shrink-0" />
-                <h2 className="font-bold text-xs sm:text-sm text-zinc-900 truncate">
-                  আনলকড বিষয়সমূহ ({unlockedList.length})
-                </h2>
-              </div>
-              <span className="text-[10px] font-mono text-emerald-800 font-semibold bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 shrink-0">
-                লাইফটাইম অ্যাক্সেস
-              </span>
-            </div>
-
-            <div className="space-y-2">
-              {unlockedList.map((ch) => {
-                return (
-                  <div
-                    key={ch.id}
-                    className="rounded-2xl bg-gradient-to-r from-emerald-50/30 via-white to-white border border-emerald-200/80 p-3 sm:p-3.5 shadow-[0_2px_8px_rgba(0,0,0,0.02)] flex items-center justify-between gap-3 hover:border-emerald-300 transition"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 mb-0.5">
-                        <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-900 border border-emerald-200/60 px-1.5 py-0.5 rounded">
-                          {ch.courseCode}
-                        </span>
-                        <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 inline-flex items-center gap-1">
-                          <CheckCircle2 size={10} /> আনলকড
-                        </span>
-                      </div>
-                      <h4 className="font-semibold text-xs sm:text-sm text-zinc-900 truncate">
-                        বই {ch.bookNumber}: {ch.titleBn}
-                      </h4>
-                      <p className="text-[10px] text-zinc-400 mt-0.5 font-mono">
-                        মোট {ch.endPage} পৃষ্ঠা • আনলকড
-                      </p>
-                    </div>
-
-                    <Link
-                      href={`/read?ch=${ch.index}`}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-[0_2px_8px_rgba(16,185,129,0.25)] active:scale-95 transition shrink-0"
-                      title="বইটি পড়ুন"
-                    >
-                      <BookOpen size={13} />
-                      <span>পড়ুন</span>
-                    </Link>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        {/* Section 2: Activation Code Input Card */}
+        {/* Section 1: Activation Code Input Card (Placed prominently at top so users can redeem anytime, including during free periods) */}
         <section className="rounded-2xl bg-gradient-to-br from-amber-50/50 via-white to-white border border-amber-200/80 p-4 sm:p-5 shadow-[0_2px_12px_rgba(245,158,11,0.05)] space-y-3.5">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-800 flex items-center justify-center shrink-0 border border-amber-300/60">
@@ -515,10 +471,10 @@ function UnlockPageContent() {
             </div>
             <div className="min-w-0">
               <h3 className="font-bold text-xs sm:text-sm text-zinc-900 truncate">
-                অ্যাক্টিভেশন কোড
+                অ্যাক্টিভেশন কোড রিডিম করুন
               </h3>
-              <p className="text-[11px] text-zinc-400 truncate">
-                প্রাপ্ত আনলক কোডটি এখানে এন্টার করুন
+              <p className="text-[11px] text-zinc-500">
+                ফ্রি চলাকালীন সময়েও স্থায়ী কোড দিলে বিষয়টি আজীবনের জন্য আনলক হয়ে যাবে
               </p>
             </div>
           </div>
@@ -530,7 +486,7 @@ function UnlockPageContent() {
                   type="text"
                   value={code}
                   onChange={(e) => setCode(e.target.value.toUpperCase())}
-                  placeholder="কোড লিখুন (যেমন: BACK-2026)"
+                  placeholder="কোড লিখুন (যেমন: BACK-XXXX)"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-amber-300/80 text-zinc-900 placeholder:text-zinc-400 text-xs sm:text-sm font-mono tracking-wider uppercase focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200/50 transition"
                 />
               </div>
@@ -568,24 +524,99 @@ function UnlockPageContent() {
               className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-bold text-xs sm:text-sm shadow-[0_2px_10px_rgba(245,158,11,0.25)] active:scale-98 transition disabled:opacity-40 disabled:pointer-events-none cursor-pointer flex items-center justify-center gap-2"
             >
               <KeyRound size={14} />
-              <span>{submitting ? "যাচাই করা হচ্ছে..." : "কোড দিয়ে আনলক করুন"}</span>
+              <span>
+                {submitting ? "যাচাই করা হচ্ছে..." : "কোড দিয়ে আনলক করুন"}
+              </span>
             </button>
           </form>
         </section>
 
-        {/* Section 3: Remaining Subjects to Unlock & Telegram/WhatsApp Order */}
-        {lockedList.length > 0 && (
+        {/* Section 2: Currently Unlocked / Free Subjects List */}
+        {unlockedList.length > 0 && (
+          <section className="space-y-2.5">
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Unlock size={15} className="text-emerald-600 shrink-0" />
+                <h2 className="font-bold text-xs sm:text-sm text-zinc-900 truncate">
+                  আপনার আনলকড ও ফ্রি বিষয়সমূহ ({toBengaliDigits(unlockedList.length)})
+                </h2>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {unlockedList.map((ch) => {
+                const accessInfo = getSubjectAccessInfo(ch.id);
+                return (
+                  <div
+                    key={ch.id}
+                    className="rounded-2xl bg-gradient-to-r from-emerald-50/30 via-white to-white border border-emerald-200/80 p-3 sm:p-3.5 shadow-[0_2px_8px_rgba(0,0,0,0.02)] flex items-center justify-between gap-3 hover:border-emerald-300 transition"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                        <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-900 border border-emerald-200/60 px-1.5 py-0.5 rounded">
+                          {ch.courseCode}
+                        </span>
+
+                        {accessInfo.badgeType === "permanent" ? (
+                          <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 inline-flex items-center gap-1">
+                            <CheckCircle2 size={10} /> স্থায়ী আনলকড
+                          </span>
+                        ) : accessInfo.badgeType === "timed" ? (
+                          <span className="text-[10px] font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300 inline-flex items-center gap-1">
+                            <Clock size={10} /> {accessInfo.countdownTextBn}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-emerald-900 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300 inline-flex items-center gap-1">
+                            <Gift size={10} /> {accessInfo.badgeTextBn}
+                          </span>
+                        )}
+                      </div>
+                      <h4 className="font-semibold text-xs sm:text-sm text-zinc-900 truncate">
+                        বই {ch.bookNumber}: {ch.titleBn}
+                      </h4>
+                      <p className="text-[10px] text-zinc-400 mt-0.5 font-mono">
+                        মোট {ch.endPage} পৃষ্ঠা •{" "}
+                        {accessInfo.badgeType === "permanent"
+                          ? "লাইফটাইম অ্যাক্সেস"
+                          : accessInfo.badgeTextBn}
+                      </p>
+                    </div>
+
+                    <Link
+                      href={`/read?ch=${ch.index}`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-[0_2px_8px_rgba(16,185,129,0.25)] active:scale-95 transition shrink-0"
+                      title="বইটি পড়ুন"
+                    >
+                      <BookOpen size={13} />
+                      <span>পড়ুন</span>
+                    </Link>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* Section 3: Subjects not yet Permanently Unlocked (Can select to buy permanent code) */}
+        {nonPermanentList.length > 0 && (
           <section className="rounded-2xl bg-white border border-zinc-200/80 p-4 sm:p-5 shadow-[0_2px_12px_rgba(0,0,0,0.02)] space-y-3.5">
             <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-zinc-100">
               <div className="min-w-0">
                 <h3 className="font-bold text-xs sm:text-sm text-zinc-900 truncate">
-                  বাকি বিষয়সমূহ ({lockedList.length}টি)
+                  স্থায়ীভাবে আনলক করার বিষয়সমূহ ({toBengaliDigits(nonPermanentList.length)}টি)
                 </h3>
                 <p className="text-[11px] text-zinc-400 mt-0.5 truncate">
                   {isOffer ? (
                     <>
-                      অফার মূল্য: <span className="text-emerald-700 font-bold font-mono">৳{offerPrice}</span>{" "}
-                      (পূর্বে <span className="line-through font-mono">৳{regularPrice}</span>)
+                      অফার মূল্য:{" "}
+                      <span className="text-emerald-700 font-bold font-mono">
+                        ৳{offerPrice}
+                      </span>{" "}
+                      (পূর্বে{" "}
+                      <span className="line-through font-mono">
+                        ৳{regularPrice}
+                      </span>
+                      )
                     </>
                   ) : (
                     `প্রতি বিষয় ৳${regularPrice}`
@@ -597,16 +628,17 @@ function UnlockPageContent() {
                 onClick={selectAllLocked}
                 className="text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 px-2.5 py-1 rounded-lg cursor-pointer transition shrink-0"
               >
-                {selectedToBuy.length === lockedList.length
+                {selectedToBuy.length === nonPermanentList.length
                   ? "সব আনসিলেক্ট"
-                  : `সব সিলেক্ট (${lockedList.length})`}
+                  : `সব সিলেক্ট (${toBengaliDigits(nonPermanentList.length)})`}
               </button>
             </div>
 
             {/* Checkbox List */}
             <div className="space-y-1.5">
-              {lockedList.map((ch) => {
+              {nonPermanentList.map((ch) => {
                 const isChecked = selectedToBuy.includes(ch.id);
+                const accessInfo = getSubjectAccessInfo(ch.id);
                 return (
                   <div
                     key={ch.id}
@@ -628,13 +660,23 @@ function UnlockPageContent() {
                         {isChecked && <Check size={11} strokeWidth={3} />}
                       </div>
                       <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-[10px] font-mono font-semibold bg-zinc-200/70 text-zinc-700 px-1.5 py-0.5 rounded">
                             {ch.courseCode}
                           </span>
                           <span className="text-[11px] text-zinc-400">
                             বই {ch.bookNumber}
                           </span>
+                          {accessInfo.badgeType === "free" && (
+                            <span className="text-[9px] font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full">
+                              বর্তমানে ফ্রি
+                            </span>
+                          )}
+                          {accessInfo.badgeType === "timed" && (
+                            <span className="text-[9px] font-bold bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded-full">
+                              টাইমড ({accessInfo.countdownTextBn})
+                            </span>
+                          )}
                         </div>
                         <h4 className="font-semibold text-xs sm:text-sm text-zinc-900 truncate mt-0.5">
                           {ch.titleBn}
@@ -657,7 +699,7 @@ function UnlockPageContent() {
                           ৳{regularPrice}
                         </span>
                       )}
-                      <p className="text-[10px] text-zinc-400">সম্পূর্ণ বই</p>
+                      <p className="text-[10px] text-zinc-400">স্থায়ী আনলক</p>
                     </div>
                   </div>
                 );
@@ -667,8 +709,13 @@ function UnlockPageContent() {
             {/* Price & Action Buttons */}
             <div className="pt-2.5 border-t border-zinc-100 space-y-2.5">
               <div className="flex items-center justify-between text-xs font-bold">
-                <span className="text-zinc-600">সিলেক্টেড: {selectedToBuy.length}টি</span>
-                <div suppressHydrationWarning className="flex items-center gap-1.5 font-mono">
+                <span className="text-zinc-600">
+                  সিলেক্টেড: {toBengaliDigits(selectedToBuy.length)}টি
+                </span>
+                <div
+                  suppressHydrationWarning
+                  className="flex items-center gap-1.5 font-mono"
+                >
                   {isOffer && selectedToBuy.length > 0 && (
                     <span className="line-through text-zinc-400 text-xs">
                       ৳{selectedToBuy.length * regularPrice}
@@ -683,7 +730,8 @@ function UnlockPageContent() {
               {/* Dynamic Contact Buttons */}
               <div
                 className={
-                  settings?.contactChannel === "both" || !settings?.contactChannel
+                  settings?.contactChannel === "both" ||
+                  !settings?.contactChannel
                     ? "grid grid-cols-1 sm:grid-cols-2 gap-2"
                     : "space-y-2"
                 }
@@ -718,29 +766,38 @@ function UnlockPageContent() {
               {/* WhatsApp Quick Copy Box */}
               {(settings?.contactChannel === "whatsapp" ||
                 settings?.contactChannel === "both" ||
-                !settings?.contactChannel) && whatsAppDisplayNumber && (
-                <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-50/90 border border-emerald-200/90 text-xs shadow-2xs">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div className="w-7 h-7 rounded-lg bg-[#25D366] text-white flex items-center justify-center shrink-0">
-                      <MessageCircle size={13} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-[10px] text-zinc-500 font-medium leading-none mb-0.5">WhatsApp নম্বর</div>
-                      <div className="font-mono font-bold text-emerald-950 text-xs truncate">
-                        {whatsAppDisplayNumber}
+                !settings?.contactChannel) &&
+                whatsAppDisplayNumber && (
+                  <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-emerald-50/90 border border-emerald-200/90 text-xs shadow-2xs">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-7 h-7 rounded-lg bg-[#25D366] text-white flex items-center justify-center shrink-0">
+                        <MessageCircle size={13} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[10px] text-zinc-500 font-medium leading-none mb-0.5">
+                          WhatsApp নম্বর
+                        </div>
+                        <div className="font-mono font-bold text-emerald-950 text-xs truncate">
+                          {whatsAppDisplayNumber}
+                        </div>
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyWhatsAppNumber}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-2xs active:scale-95 transition cursor-pointer"
+                    >
+                      {copiedNumber ? (
+                        <Check size={12} className="text-emerald-200" />
+                      ) : (
+                        <Copy size={12} />
+                      )}
+                      <span>
+                        {copiedNumber ? "কপি হয়েছে!" : "নম্বর কপি করুন"}
+                      </span>
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleCopyWhatsAppNumber}
-                    className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-2xs active:scale-95 transition cursor-pointer"
-                  >
-                    {copiedNumber ? <Check size={12} className="text-emerald-200" /> : <Copy size={12} />}
-                    <span>{copiedNumber ? "কপি হয়েছে!" : "নম্বর কপি করুন"}</span>
-                  </button>
-                </div>
-              )}
+                )}
 
               <p className="text-[10px] text-center text-zinc-400 pt-0.5">
                 পেমেন্ট: বিকাশ / নগদ (Personal) • ৫ মিনিটে কোড ডেলিভারি

@@ -3,7 +3,12 @@
 import React, { useRef, useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useAuth, LocalBookmark } from "@/lib/context/AuthContext";
+import {
+  useAuth,
+  LocalBookmark,
+  NoticeItem,
+  toBengaliDigits,
+} from "@/lib/context/AuthContext";
 import { CHAPTERS, BOOK_INFO } from "@/lib/book/chapters";
 import { isCapacitorNativeApp } from "@/lib/capacitor/localApiBridge";
 import {
@@ -13,17 +18,18 @@ import {
   BookOpen,
   Layers,
   Download,
-  User,
   ChevronLeft,
   ChevronRight,
   Bookmark,
   Trash2,
   X,
   Check,
-  WifiOff,
-  Loader2,
   ShieldCheck,
   CheckCircle2,
+  Bell,
+  Clock,
+  Gift,
+  Calendar,
 } from "lucide-react";
 
 const COVER_PALETTES = [
@@ -38,12 +44,8 @@ const COVER_PALETTES = [
 
 export default function HomePage() {
   const {
-    hasAllSubjectsUnlocked,
-    unlockedSubjects,
     isSubjectUnlocked,
-    setShowUnlockModal,
-    deviceId,
-    sessionToken,
+    getSubjectAccessInfo,
     isLoggedIn,
     user,
     profile,
@@ -51,17 +53,21 @@ export default function HomePage() {
     removeBookmarkItem,
     progress,
     perBookProgress,
-    offlineBookIndices,
-    savingOfflineChapter,
     isBookSavedOffline,
-    toggleOfflineBook,
+    notices,
   } = useAuth();
 
   const router = useRouter();
   const [showBookmarksModal, setShowBookmarksModal] = useState(false);
-  const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<number | "all">("all");
+  const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<
+    number | "all"
+  >("all");
   const [isNativeApp, setIsNativeApp] = useState(false);
   const [showAppNotice, setShowAppNotice] = useState(false);
+
+  // Notice Modal State
+  const [showNoticesModal, setShowNoticesModal] = useState(false);
+  const [activeNoticeId, setActiveNoticeId] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -75,6 +81,9 @@ export default function HomePage() {
       const params = new URLSearchParams(window.location.search);
       if (params.get("bookmarks") === "1") {
         setShowBookmarksModal(true);
+      }
+      if (params.get("notices") === "1") {
+        setShowNoticesModal(true);
       }
       try {
         router.prefetch("/read");
@@ -93,6 +102,18 @@ export default function HomePage() {
       localStorage.setItem("backbencher_app_notice_v1", "1");
     } catch {}
   };
+
+  const openNoticeDetail = (notice?: NoticeItem) => {
+    if (notice) {
+      setActiveNoticeId(notice.id);
+    } else if (notices.length > 0 && !activeNoticeId) {
+      setActiveNoticeId(notices[0].id);
+    }
+    setShowNoticesModal(true);
+  };
+
+  const selectedNotice: NoticeItem | null =
+    notices.find((n) => n.id === activeNoticeId) || notices[0] || null;
 
   const shelfOneRef = useRef<HTMLDivElement>(null);
   const shelfTwoRef = useRef<HTMLDivElement>(null);
@@ -136,6 +157,8 @@ export default function HomePage() {
       ? subjectGroups
       : subjectGroups.filter((g) => g.book.index === selectedSubjectFilter);
 
+  const latestNotice = notices.length > 0 ? notices[0] : null;
+
   return (
     <div className="min-h-dvh bg-[#FAF9F6] text-[#141413] pb-28 overflow-x-hidden selection:bg-black selection:text-white">
       {/* Hide native scrollbar on shelves */}
@@ -152,22 +175,38 @@ export default function HomePage() {
       <header className="max-w-4xl lg:max-w-5xl xl:max-w-6xl mx-auto px-4 sm:px-8 h-14 flex items-center justify-between gap-2.5 text-xs font-medium">
         {!isNativeApp ? (
           <a
-            href="/Backbencher.apk"
+            href="/Backbencher.apk?v=2.0"
             download="Backbencher.apk"
             className="px-3 py-1.5 rounded-full bg-black/[0.05] hover:bg-black/10 text-[#141413] font-bold flex items-center gap-1.5 text-[11px] active:scale-95 transition cursor-pointer border border-black/10"
-            title="অফলাইনে সাজেশন পড়তে Backbencher Android App ডাউনলোড করুন"
+            title="অফলাইনে সাজেশন পড়তে Backbencher Android App v2.0 ডাউনলোড করুন"
           >
             <Download size={12} />
-            <span>অ্যাপ ডাউনলোড (.APK)</span>
+            <span>অ্যাপ ডাউনলোড (v2.0 .APK)</span>
           </a>
         ) : (
           <div className="flex items-center gap-1.5 text-[11px] font-bold font-mono opacity-60">
             <ShieldCheck size={13} className="text-emerald-700" />
-            <span>Backbencher App</span>
+            <span>Backbencher App v2.0</span>
           </div>
         )}
 
         <div className="flex items-center gap-2">
+          {/* Notice Board Button */}
+          {notices.length > 0 && (
+            <button
+              type="button"
+              onClick={() => openNoticeDetail(notices[0])}
+              className="flex items-center gap-1.5 py-1.5 px-3 rounded-full bg-amber-500/12 hover:bg-amber-500/20 text-amber-950 border border-amber-500/25 transition active:scale-95 cursor-pointer text-xs font-bold"
+              title="সকল নোটিশ দেখুন"
+            >
+              <Bell size={13} className="text-amber-700" />
+              <span className="hidden sm:inline">নোটিশ</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-amber-600 text-white text-[10px] font-mono">
+                {toBengaliDigits(notices.length)}
+              </span>
+            </button>
+          )}
+
           <Link
             href="/profile"
             className="flex items-center gap-2 py-1.5 px-3 rounded-full bg-black/[0.04] hover:bg-black/[0.08] border border-black/8 transition active:scale-95 cursor-pointer shadow-2xs group"
@@ -202,7 +241,7 @@ export default function HomePage() {
           {BOOK_INFO.title}
         </h1>
         <p className="text-[11px] sm:text-xs opacity-65 font-semibold mt-1.5 max-w-xs sm:max-w-md mx-auto leading-relaxed">
-          বোটানি অনার্স ৩য় বর্ষ • ৭টি আলাদা বই (প্রতি বিষয় ৳৪৯ • ফ্রি প্রিভিউ উন্মুক্ত)
+          বোটানি অনার্স ৩য় বর্ষ • ৭টি আলাদা বই
         </p>
 
         {/* Notice shown ONLY on web, hidden in App as requested */}
@@ -210,6 +249,51 @@ export default function HomePage() {
           <p className="text-[11px] sm:text-[13px] text-[#141413]/75 mt-3 max-w-2xl mx-auto leading-relaxed bg-black/[0.03] border border-black/8 rounded-2xl px-4 py-3">
             প্রত্যেকটি বিষয়ের জন্য <strong>ক-বিভাগে ৫০টি</strong>, <strong>খ-বিভাগে ১৫–১৮টি</strong> এবং <strong>গ-বিভাগে ১৫–১৭টি</strong> করে প্রশ্ন ও প্রত্যেক সাজেশনের উত্তর দেওয়া আছে। এগুলো সব ব্যাকবেঞ্চারদের জন্য—যারা সারা বছর পড়েনি তাদের কথা মাথায় রেখে বানানো হয়েছে। যদি কেউ <strong>CGPA 3.50</strong>-এর উপরে তুলতে চাও, তাদের এই সাজেশনের পাশাপাশি বাকি সকল বিষয় পড়ার জন্য অনুরোধ করা হলো; কারণ এই বই থেকে <strong>৬০–৭০% কমন</strong> আসবে, ১০০% না—তাই এটি শুধুমাত্র ব্যাকবেঞ্চারদের সাজেশন।
           </p>
+        )}
+
+        {/* Admin Published Notice Banner (Clickable to read FULL notice & history) */}
+        {latestNotice && (
+          <div className="max-w-2xl mx-auto mt-3 text-left">
+            <div
+              onClick={() => openNoticeDetail(latestNotice)}
+              className={`rounded-2xl px-4 py-3 border transition cursor-pointer shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                latestNotice.important
+                  ? "bg-amber-50/90 border-amber-300/90 text-amber-950 hover:bg-amber-100/70"
+                  : "bg-white border-black/10 text-[#141413] hover:bg-black/[0.02]"
+              }`}
+            >
+              <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                <div
+                  className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
+                    latestNotice.important
+                      ? "bg-amber-500 text-white"
+                      : "bg-[#141413] text-white"
+                  }`}
+                >
+                  <Bell size={13} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-black/8">
+                      নোটিশ
+                    </span>
+                    <h3 className="font-bold text-xs sm:text-sm truncate">
+                      {latestNotice.title}
+                    </h3>
+                  </div>
+                  <p className="text-[11px] opacity-75 line-clamp-2 mt-0.5 leading-relaxed">
+                    {latestNotice.body}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 shrink-0">
+                <span className="text-[11px] font-bold underline underline-offset-2 whitespace-nowrap">
+                  পুরো নোটিশ পড়ুন →
+                </span>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Small dismissible In-App Notice */}
@@ -257,7 +341,9 @@ export default function HomePage() {
                     <span>{shelfTitle}</span>
                   </h2>
                   <div className="flex items-center gap-1.5 text-xs opacity-50">
-                    <span className="font-mono text-[11px]">{shelfBooks.length} books</span>
+                    <span className="font-mono text-[11px]">
+                      {shelfBooks.length} books
+                    </span>
                     <button
                       onClick={() => scrollShelf(shelfRef, "left")}
                       className="p-1 hover:opacity-100 cursor-pointer"
@@ -281,35 +367,67 @@ export default function HomePage() {
                     className="flex sm:grid sm:grid-cols-4 gap-3 sm:gap-5 overflow-x-auto no-scrollbar snap-x snap-mandatory px-3 sm:px-5 relative z-10"
                   >
                     {shelfBooks.map((ch) => {
-                      const palette = COVER_PALETTES[ch.index % COVER_PALETTES.length];
+                      const palette =
+                        COVER_PALETTES[ch.index % COVER_PALETTES.length];
                       const savedForBook = perBookProgress?.[String(ch.index)];
                       const targetPage = savedForBook?.pageNumber || 1;
                       const targetOffset = savedForBook?.pageOffset || 0;
-                      const bookUnlocked = isSubjectUnlocked(ch.id);
+                      const accessInfo = getSubjectAccessInfo(ch.id);
+                      const bookUnlocked = accessInfo.isUnlocked;
                       const bookOffline = isBookSavedOffline(ch.index);
 
                       return (
                         <Link
                           key={ch.id}
                           href={`/read?ch=${ch.index}&page=${targetPage}&offset=${targetOffset}`}
-                          className={`snap-start shrink-0 w-[128px] sm:w-auto aspect-[3/4.2] rounded-xl p-3 sm:p-4 flex flex-col justify-between shadow-md active:scale-95 sm:hover:-translate-y-1.5 transition-all duration-300 ${palette.bg} ${palette.text}`}
+                          className={`snap-start shrink-0 w-[138px] sm:w-auto aspect-[3/4.3] rounded-xl p-3 sm:p-4 flex flex-col justify-between shadow-md active:scale-95 sm:hover:-translate-y-1.5 transition-all duration-300 ${palette.bg} ${palette.text}`}
                         >
-                          <div className="flex items-center justify-between gap-1">
-                            <span
-                              className={`text-[9px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${palette.accent}`}
-                            >
-                              {ch.courseCode}
-                            </span>
-                            {bookOffline ? (
-                              <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-emerald-400 text-black px-1.5 py-0.5 rounded-full shadow-xs">
-                                <Check size={9} /> অফলাইন
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between gap-1">
+                              <span
+                                className={`text-[9px] sm:text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${palette.accent}`}
+                              >
+                                {ch.courseCode}
                               </span>
-                            ) : bookUnlocked ? (
-                              <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-emerald-400 text-black px-1.5 py-0.5 rounded-full shadow-xs">
-                                <Unlock size={9} /> Unlocked
-                              </span>
-                            ) : (
-                              <Lock size={11} className="opacity-75" />
+
+                              {/* Status Pill: Permanent vs Timed vs Global Free vs Locked */}
+                              {accessInfo.badgeType === "permanent" ? (
+                                bookOffline ? (
+                                  <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-emerald-400 text-black px-1.5 py-0.5 rounded-full shadow-xs">
+                                    <Check size={9} /> অফলাইন
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-emerald-400 text-black px-1.5 py-0.5 rounded-full shadow-xs">
+                                    <Unlock size={9} /> আনলকড
+                                  </span>
+                                )
+                              ) : accessInfo.badgeType === "timed" ? (
+                                <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-amber-300 text-black px-1.5 py-0.5 rounded-full shadow-xs">
+                                  <Clock size={9} /> টাইমড
+                                </span>
+                              ) : accessInfo.badgeType === "free" ? (
+                                <span className="inline-flex items-center gap-0.5 text-[8px] sm:text-[9px] font-extrabold bg-emerald-300 text-black px-1.5 py-0.5 rounded-full shadow-xs">
+                                  <Gift size={9} /> ফ্রি
+                                </span>
+                              ) : (
+                                <Lock size={11} className="opacity-75" />
+                              )}
+                            </div>
+
+                            {/* Countdown Banner ONLY for Timed or Free (Never for Permanent) */}
+                            {accessInfo.badgeType === "timed" &&
+                              accessInfo.countdownTextBn && (
+                                <div className="text-[8.5px] sm:text-[9.5px] font-bold bg-black/35 text-amber-200 px-1.5 py-0.5 rounded-md leading-tight truncate">
+                                  ⏳ {accessInfo.countdownTextBn}
+                                </div>
+                              )}
+                            {accessInfo.badgeType === "free" && (
+                              <div className="text-[8.5px] sm:text-[9.5px] font-bold bg-black/35 text-emerald-200 px-1.5 py-0.5 rounded-md leading-tight truncate">
+                                🎁{" "}
+                                {accessInfo.countdownTextBn
+                                  ? `ফ্রি: ${accessInfo.countdownTextBn}`
+                                  : "ফ্রি উন্মুক্ত"}
+                              </div>
                             )}
                           </div>
 
@@ -322,9 +440,17 @@ export default function HomePage() {
                             </h3>
                           </div>
 
-                          <div className="text-[9px] sm:text-[10px] opacity-80 flex items-center justify-between border-t border-current/15 pt-1.5">
+                          <div className="text-[9px] sm:text-[10px] opacity-85 flex items-center justify-between border-t border-current/15 pt-1.5">
                             <span>মোট {ch.endPage} পৃষ্ঠা</span>
-                            <span>{bookOffline ? "অফলাইন →" : bookUnlocked ? "আনলকড →" : "পড়ুন →"}</span>
+                            <span>
+                              {bookOffline
+                                ? "অফলাইন →"
+                                : accessInfo.badgeType === "free"
+                                ? "ফ্রি পড়ুন →"
+                                : bookUnlocked
+                                ? "পড়ুন →"
+                                : "প্রিভিউ →"}
+                            </span>
                           </div>
                         </Link>
                       );
@@ -349,15 +475,14 @@ export default function HomePage() {
             );
           };
 
-          // If user has unlocked books: show "আমার বইসমূহ" first, then "বাকি বইসমূহ"
+          // If user has unlocked books (permanent, timed, or global free): show them first
           if (unlockedBooks.length > 0) {
             return (
               <div className="space-y-9 sm:space-y-12">
-                {/* My Books Shelves (Max 4 books per shelf) */}
                 {renderShelfRack(
                   unlockedBooks.slice(0, 4),
                   "my-books-1",
-                  "আমার আনলকড বইসমূহ (My Books)",
+                  "আনলকড ও ফ্রি উন্মুক্ত বইসমূহ",
                   shelfMy1Ref,
                   "emerald"
                 )}
@@ -365,12 +490,11 @@ export default function HomePage() {
                   renderShelfRack(
                     unlockedBooks.slice(4, 7),
                     "my-books-2",
-                    "আমার আনলকড বইসমূহ — ২য় তাক",
+                    "আনলকড ও ফ্রি উন্মুক্ত বইসমূহ — ২য় তাক",
                     shelfMy2Ref,
                     "emerald"
                   )}
 
-                {/* Remaining Locked Books (Max 4 books per shelf) */}
                 {lockedBooks.length > 0 && (
                   <>
                     {renderShelfRack(
@@ -428,34 +552,174 @@ export default function HomePage() {
                 <div className="min-w-0">
                   <div className="inline-flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider bg-white/10 text-emerald-300 px-2.5 py-0.5 rounded-full mb-1.5">
                     <ShieldCheck size={11} />
-                    <span>Official Android App • Offline Edition</span>
+                    <span>Official Android App v2.0 • Offline Edition</span>
                   </div>
                   <h2 className="font-serif font-black text-base sm:text-xl text-white leading-snug">
                     অফলাইনে সাজেশন রাখতে ও সেরা রিডিং এক্সপেরিয়েন্স পেতে অ্যাপ ডাউনলোড করুন
                   </h2>
                   <p className="text-xs sm:text-[13px] text-white/75 mt-1.5 leading-relaxed max-w-2xl">
-                    অফলাইনে সাজেশন বই সেভ করে ইন্টারনেট ছাড়াই যেকোনো সময় পড়তে এবং ফুল-স্ক্রিন ফ্লিপবুক, ডার্ক/সেপিয়া মোড ও দ্রুত সার্চের সুন্দর এক্সপেরিয়েন্স পেতে আমাদের অফিসিয়াল <strong>Backbencher</strong> Android অ্যাপটি ইনস্টল করুন।
+                    অফলাইনে সাজেশন বই সেভ করে ইন্টারনেট ছাড়াই যেকোনো সময় পড়তে এবং ফুল-স্ক্রিন ফ্লিপবুক, ডার্ক/সেপিয়া মোড ও দ্রুত সার্চের সুন্দর এক্সপেরিয়েন্স পেতে আমাদের অফিসিয়াল <strong>Backbencher v2.0</strong> Android অ্যাপটি ইনস্টল করুন।
                   </p>
                 </div>
               </div>
 
               <div className="w-full sm:w-auto shrink-0 flex flex-col items-stretch sm:items-end gap-1.5">
                 <a
-                  href="/Backbencher.apk"
+                  href="/Backbencher.apk?v=2.0"
                   download="Backbencher.apk"
                   className="w-full sm:w-auto px-5 py-3 rounded-full bg-white text-[#141413] hover:bg-neutral-100 font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg active:scale-95 transition cursor-pointer"
                 >
                   <Download size={15} />
-                  <span>অ্যাপ ডাউনলোড করুন (.APK)</span>
+                  <span>অ্যাপ ডাউনলোড করুন (v2.0 .APK)</span>
                 </a>
                 <span className="text-[10px] text-white/50 text-center sm:text-right font-mono">
-                  Android 7.0+ • Safe &amp; Encrypted Offline Vault
+                  Version 2.0 • Android 7.0+ • Safe Offline Vault
                 </span>
               </div>
             </div>
           </section>
         )}
       </main>
+
+      {/* Full Notice Reader & Notice History Modal */}
+      {showNoticesModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3.5 sm:p-4"
+          onClick={() => setShowNoticesModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-[#FAF9F6] text-[#141413] w-full max-w-2xl max-h-[85dvh] rounded-3xl shadow-[0_24px_70px_rgba(0,0,0,0.22)] border border-black/10 p-5 sm:p-6 flex flex-col overflow-hidden"
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3.5 mb-3.5 border-b border-black/10 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-full bg-[#141413] text-white flex items-center justify-center shrink-0">
+                  <Bell size={16} />
+                </div>
+                <div>
+                  <h3 className="font-serif font-black text-base sm:text-lg tracking-tight leading-none">
+                    নোটিশ বোর্ড
+                  </h3>
+                  <p className="text-[11px] opacity-60 mt-1">
+                    মোট {toBengaliDigits(notices.length)}টি নোটিশ • যেকোনো নোটিশে ক্লিক করে সম্পূর্ণ পড়ুন
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowNoticesModal(false)}
+                className="w-8 h-8 rounded-full bg-black/5 hover:bg-black/10 flex items-center justify-center transition cursor-pointer shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {notices.length === 0 ? (
+              <div className="text-center py-12 text-xs opacity-60">
+                বর্তমানে কোনো নোটিশ নেই।
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                {/* Active Full Notice Detail Card */}
+                {selectedNotice && (
+                  <div
+                    className={`p-4 sm:p-5 rounded-2xl border shadow-2xs space-y-3 ${
+                      selectedNotice.important
+                        ? "bg-amber-50/70 border-amber-300"
+                        : "bg-white border-black/10"
+                    }`}
+                  >
+                    <div className="space-y-1 border-b border-black/8 pb-3">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {selectedNotice.important && (
+                          <span className="text-[10px] font-bold bg-amber-500 text-white px-2 py-0.5 rounded-full">
+                            জরুরি নোটিশ
+                          </span>
+                        )}
+                        <span className="text-[11px] font-mono opacity-55 inline-flex items-center gap-1">
+                          <Calendar size={11} />
+                          {new Date(selectedNotice.createdAt).toLocaleString(
+                            "bn-BD"
+                          )}
+                        </span>
+                      </div>
+                      <h4 className="font-serif font-black text-base sm:text-lg text-[#141413] leading-snug pt-0.5">
+                        {selectedNotice.title}
+                      </h4>
+                    </div>
+
+                    {/* Full Untruncated Scrollable Body */}
+                    <div className="text-xs sm:text-sm text-[#141413]/90 whitespace-pre-wrap leading-relaxed select-text">
+                      {selectedNotice.body}
+                    </div>
+                  </div>
+                )}
+
+                {/* Notice History List (Old Notices) */}
+                {notices.length > 1 && (
+                  <div className="space-y-2 pt-2">
+                    <h5 className="text-xs font-extrabold uppercase tracking-wider opacity-60 px-1">
+                      সকল নোটিশ তালিকা ({toBengaliDigits(notices.length)})
+                    </h5>
+                    <div className="space-y-1.5">
+                      {notices.map((n) => {
+                        const isCurrent = selectedNotice?.id === n.id;
+                        return (
+                          <button
+                            key={n.id}
+                            type="button"
+                            onClick={() => setActiveNoticeId(n.id)}
+                            className={`w-full text-left p-3 rounded-2xl border transition cursor-pointer flex items-center justify-between gap-3 ${
+                              isCurrent
+                                ? "bg-[#141413] text-white border-[#141413]"
+                                : "bg-white hover:bg-black/[0.03] border-black/8 text-[#141413]"
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                {n.important && (
+                                  <span
+                                    className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                                      isCurrent
+                                        ? "bg-amber-400 text-black"
+                                        : "bg-amber-100 text-amber-900"
+                                    }`}
+                                  >
+                                    জরুরি
+                                  </span>
+                                )}
+                                <span className="font-bold text-xs truncate">
+                                  {n.title}
+                                </span>
+                              </div>
+                              <p
+                                className={`text-[11px] truncate mt-0.5 ${
+                                  isCurrent ? "text-white/75" : "opacity-60"
+                                }`}
+                              >
+                                {n.body}
+                              </p>
+                            </div>
+                            <span
+                              className={`text-[10px] font-mono shrink-0 ${
+                                isCurrent ? "text-white/70" : "opacity-50"
+                              }`}
+                            >
+                              {new Date(n.createdAt).toLocaleDateString(
+                                "bn-BD"
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Subject-Wise Bookmarks Modal on Home Screen */}
       {showBookmarksModal && (
@@ -535,7 +799,6 @@ export default function HomePage() {
               <div className="flex-1 overflow-y-auto no-scrollbar space-y-4">
                 {visibleSubjectGroups.map((grp) => (
                   <div key={grp.book.id} className="space-y-1.5">
-                    {/* Compact Subject Divider */}
                     <div className="flex items-center justify-between px-1">
                       <div className="flex items-center gap-1.5 min-w-0">
                         <span className="text-[10px] font-mono font-bold bg-[#141413] text-white px-2 py-0.5 rounded-full shrink-0">
@@ -551,7 +814,6 @@ export default function HomePage() {
                       </span>
                     </div>
 
-                    {/* Clean Bookmark Cards */}
                     <div className="bg-white rounded-2xl border border-black/8 divide-y divide-black/6 overflow-hidden shadow-2xs">
                       {grp.items.map((bm: LocalBookmark) => {
                         const cleanLabel = bm.label
@@ -646,6 +908,14 @@ export default function HomePage() {
             </span>
           )}
         </button>
+        <Link
+          href="/unlock"
+          className="h-11 sm:h-12 px-3.5 sm:px-5 rounded-full bg-amber-400 hover:bg-amber-300 text-amber-950 border border-amber-500/30 font-bold text-xs sm:text-sm shadow-xl flex items-center gap-1.5 active:scale-95 transition"
+          title="কোড দিয়ে বই আনলক করুন"
+        >
+          <Key size={15} />
+          <span className="hidden sm:inline">আনলক</span>
+        </Link>
       </div>
     </div>
   );

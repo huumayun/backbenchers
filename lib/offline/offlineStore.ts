@@ -86,6 +86,37 @@ function getLocalOfflineListKey(uid: string): string {
   return `ebook_offline_chapters_${uid}`;
 }
 
+export function isDeviceOnline(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const w = window as unknown as {
+      AndroidNative?: { isOnline?: () => boolean };
+    };
+    if (w.AndroidNative && typeof w.AndroidNative.isOnline === "function") {
+      if (!w.AndroidNative.isOnline()) return false;
+    }
+  } catch {
+    // ignore
+  }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return false;
+  }
+  return true;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init?: RequestInit,
+  timeoutMs = 7000
+): Promise<Response> {
+  return Promise.race([
+    fetch(url, init),
+    new Promise<Response>((_, reject) =>
+      setTimeout(() => reject(new Error("Network timeout")), timeoutMs)
+    ),
+  ]);
+}
+
 export function getSavedOfflineChaptersSync(uid?: string | null): number[] {
   if (!uid || typeof window === "undefined") return [];
   try {
@@ -105,6 +136,52 @@ function setSavedOfflineChaptersSync(uid: string, chapters: number[]) {
     localStorage.setItem(getLocalOfflineListKey(uid), JSON.stringify(unique));
   } catch {
     // ignore
+  }
+}
+
+export async function verifyOfflineChaptersInVault(
+  uid?: string | null
+): Promise<number[]> {
+  if (typeof window === "undefined") return [];
+  let resolvedUid = uid || "";
+  if (!resolvedUid) {
+    try {
+      const rawProf = localStorage.getItem("ebook_user_profile");
+      if (rawProf) resolvedUid = JSON.parse(rawProf)?.uid || "";
+    } catch {
+      // ignore
+    }
+  }
+  if (!resolvedUid) return [];
+
+  try {
+    const db = await openVaultDB();
+    const records = await new Promise<EncryptedBookVaultRecord[]>(
+      (resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, "readonly");
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      }
+    );
+    db.close();
+
+    const validChapters = records
+      .filter(
+        (r) =>
+          r &&
+          r.uid === resolvedUid &&
+          typeof r.chapterIndex === "number" &&
+          Boolean(r.encryptedChapterPayload)
+      )
+      .map((r) => r.chapterIndex);
+
+    const unique = Array.from(new Set(validChapters)).sort((a, b) => a - b);
+    setSavedOfflineChaptersSync(resolvedUid, unique);
+    return unique;
+  } catch {
+    return getSavedOfflineChaptersSync(resolvedUid);
   }
 }
 
@@ -129,6 +206,13 @@ export async function saveBookForOfflineApp(params: {
       message: "অফলাইনে সেভ করতে অনুগ্রহ করে আগে লগইন করুন।",
     };
   }
+  if (!isDeviceOnline()) {
+    return {
+      success: false,
+      message:
+        "ইন্টারনেট সংযোগ নেই! বইটি অফলাইনে ডাউনলোড করতে অনুগ্রহ করে ডাটা বা Wi-Fi চালু করুন।",
+    };
+  }
 
   try {
     // 1. Acquire server-side Offline Device Lease (blocks other devices from logging in while offline book is active)
@@ -147,24 +231,28 @@ export async function saveBookForOfflineApp(params: {
     }
     const unlockedSubjectsHeader = localUnlockedList.join(",");
 
-    const leaseRes = await fetch("/api/offline-lease", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-user-uid": uid,
-        "x-session-token": sessionToken,
-        "x-device-id": deviceId,
-        "x-unlocked-subjects": unlockedSubjectsHeader,
+    const leaseRes = await fetchWithTimeout(
+      "/api/offline-lease",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-uid": uid,
+          "x-session-token": sessionToken,
+          "x-device-id": deviceId,
+          "x-unlocked-subjects": unlockedSubjectsHeader,
+        },
+        body: JSON.stringify({
+          action: "acquire",
+          uid,
+          sessionToken,
+          deviceId,
+          chapterIndex,
+          subjectId: chapter.id,
+        }),
       },
-      body: JSON.stringify({
-        action: "acquire",
-        uid,
-        sessionToken,
-        deviceId,
-        chapterIndex,
-        subjectId: chapter.id,
-      }),
-    });
+      6000
+    );
     const leaseData = await leaseRes.json();
     if (!leaseRes.ok || !leaseData.success) {
       return {
@@ -182,14 +270,22 @@ export async function saveBookForOfflineApp(params: {
     };
 
     const [chapterRes, flipRes] = await Promise.all([
-      fetch(`/api/book-content?mode=chapter&chapter=${chapterIndex}`, {
-        headers,
-        cache: "no-store",
-      }),
-      fetch(`/api/book-content?mode=flipbook&chapter=${chapterIndex}`, {
-        headers,
-        cache: "no-store",
-      }),
+      fetchWithTimeout(
+        `/api/book-content?mode=chapter&chapter=${chapterIndex}`,
+        {
+          headers,
+          cache: "no-store",
+        },
+        7000
+      ),
+      fetchWithTimeout(
+        `/api/book-content?mode=flipbook&chapter=${chapterIndex}`,
+        {
+          headers,
+          cache: "no-store",
+        },
+        7000
+      ),
     ]);
 
     if (!chapterRes.ok || !flipRes.ok) {
@@ -204,7 +300,19 @@ export async function saveBookForOfflineApp(params: {
       flipRes.json(),
     ]);
 
-    const hasLockedPage = (chapterJson.pages || []).some(
+    const chapterPages = Array.isArray(chapterJson.pages)
+      ? chapterJson.pages
+      : [];
+    const flipPages = Array.isArray(flipJson.pages) ? flipJson.pages : [];
+
+    if (chapterPages.length === 0) {
+      return {
+        success: false,
+        message: "বইয়ের ডাটা পাওয়া যায়নি। ইন্টারনেট সংযোগ চেক করে আবার চেষ্টা করুন।",
+      };
+    }
+
+    const hasLockedPage = chapterPages.some(
       (p: { isLocked?: boolean }) => p.isLocked
     );
     if (hasLockedPage) {
@@ -217,7 +325,7 @@ export async function saveBookForOfflineApp(params: {
     // 3. Encrypt both payloads bound to uid + deviceId
     const encryptedChapterPayload = encryptPayload(
       JSON.stringify({
-        pages: chapterJson.pages || [],
+        pages: chapterPages,
         toc: chapterJson.toc || null,
       }),
       uid,
@@ -225,7 +333,7 @@ export async function saveBookForOfflineApp(params: {
     );
     const encryptedFlipbookPayload = encryptPayload(
       JSON.stringify({
-        pages: flipJson.pages || [],
+        pages: flipPages,
         toc: flipJson.toc || null,
       }),
       uid,
@@ -270,7 +378,8 @@ export async function saveBookForOfflineApp(params: {
   } catch {
     return {
       success: false,
-      message: "অফলাইনে সেভ করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।",
+      message:
+        "ইন্টারনেট সংযোগ পাওয়া যায়নি! বইটি অফলাইনে ডাউনলোড করতে ডাটা বা Wi-Fi চালু করে আবার চেষ্টা করুন।",
     };
   }
 }
@@ -300,24 +409,28 @@ export async function removeBookFromOfflineApp(params: {
     );
     setSavedOfflineChaptersSync(uid, updated);
 
-    if (sessionToken) {
-      await fetch("/api/offline-lease", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-user-uid": uid,
-          "x-session-token": sessionToken,
-          "x-device-id": deviceId,
+    if (sessionToken && isDeviceOnline()) {
+      await fetchWithTimeout(
+        "/api/offline-lease",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-user-uid": uid,
+            "x-session-token": sessionToken,
+            "x-device-id": deviceId,
+          },
+          body: JSON.stringify({
+            action: "release",
+            uid,
+            sessionToken,
+            deviceId,
+            chapterIndex,
+            subjectId: chapter?.id,
+          }),
         },
-        body: JSON.stringify({
-          action: "release",
-          uid,
-          sessionToken,
-          deviceId,
-          chapterIndex,
-          subjectId: chapter?.id,
-        }),
-      }).catch(() => {});
+        3000
+      ).catch(() => {});
     }
 
     return {
@@ -363,19 +476,39 @@ export async function getOfflineBookData(params: {
     }
   }
 
-  if (!uid || !deviceId) return { found: false };
-
   try {
     const db = await openVaultDB();
-    const record = await new Promise<EncryptedBookVaultRecord | undefined>(
-      (resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, "readonly");
-        const store = tx.objectStore(STORE_NAME);
-        const req = store.get(`${uid}_${chapterIndex}`);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      }
-    );
+    let record: EncryptedBookVaultRecord | undefined;
+
+    if (uid) {
+      record = await new Promise<EncryptedBookVaultRecord | undefined>(
+        (resolve, reject) => {
+          const tx = db.transaction(STORE_NAME, "readonly");
+          const store = tx.objectStore(STORE_NAME);
+          const req = store.get(`${uid}_${chapterIndex}`);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        }
+      );
+    }
+
+    if (!record) {
+      const allRecords = await new Promise<EncryptedBookVaultRecord[]>(
+        (resolve, reject) => {
+          const tx = db.transaction(STORE_NAME, "readonly");
+          const store = tx.objectStore(STORE_NAME);
+          const req = store.getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => reject(req.error);
+        }
+      );
+      record = allRecords.find(
+        (r) =>
+          r &&
+          r.chapterIndex === chapterIndex &&
+          (!uid || r.uid === uid)
+      );
+    }
 
     if (!record) {
       db.close();
@@ -408,10 +541,14 @@ export async function getOfflineBookData(params: {
       };
     }
 
-    // Update monotonic clock timestamp
-    record.lastClockMs = Math.max(record.lastClockMs, nowMs);
-    const writeTx = db.transaction(STORE_NAME, "readwrite");
-    writeTx.objectStore(STORE_NAME).put(record);
+    // Update monotonic clock timestamp safely
+    try {
+      record.lastClockMs = Math.max(record.lastClockMs, nowMs);
+      const writeTx = db.transaction(STORE_NAME, "readwrite");
+      writeTx.objectStore(STORE_NAME).put(record);
+    } catch {
+      // ignore clock write error
+    }
     db.close();
 
     const cipher =
@@ -419,12 +556,20 @@ export async function getOfflineBookData(params: {
         ? record.encryptedFlipbookPayload
         : record.encryptedChapterPayload;
 
-    const decryptedStr = decryptPayload(cipher, uid, deviceId);
+    const effectiveUid = record.uid || uid;
+    const effectiveDeviceId = record.deviceId || deviceId;
+
+    const decryptedStr = decryptPayload(cipher, effectiveUid, effectiveDeviceId);
     const parsed = JSON.parse(decryptedStr);
+    const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
+
+    if (pages.length === 0) {
+      return { found: false };
+    }
 
     return {
       found: true,
-      pages: parsed.pages || [],
+      pages,
       toc: parsed.toc || null,
     };
   } catch {

@@ -8,18 +8,21 @@ interface OfflineDownloadModalProps {
   bookNumber?: number;
   bookTitle?: string;
   totalPages: number;
+  isCompleted?: boolean;
   onComplete: () => void;
 }
 
 export default function OfflineDownloadModal({
   isOpen,
   totalPages,
+  isCompleted = false,
   onComplete,
 }: OfflineDownloadModalProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [isDone, setIsDone] = useState(false);
 
   const safeTotal = Math.max(5, totalPages || 25);
+  const maxPendingPage = Math.max(1, safeTotal - 1);
 
   useEffect(() => {
     if (!isOpen) {
@@ -28,39 +31,35 @@ export default function OfflineDownloadModal({
       return;
     }
 
-    const duration = 1200; // 1.2s fast & smooth animation
+    const duration = 900;
     const intervalTime = Math.max(25, Math.floor(duration / safeTotal));
 
-    let page = 1;
     setCurrentPage(1);
     setIsDone(false);
 
     const timer = setInterval(() => {
-      page += 1;
-      if (page >= safeTotal) {
-        setCurrentPage(safeTotal);
-        setIsDone(true);
-        clearInterval(timer);
-        const closeTimer = setTimeout(() => {
-          onComplete();
-        }, 350);
-        return () => clearTimeout(closeTimer);
-      } else {
-        setCurrentPage(page);
-      }
+      setCurrentPage((prev) => {
+        if (prev < maxPendingPage) {
+          return prev + 1;
+        }
+        return prev;
+      });
     }, intervalTime);
-
-    // Safety fallback: guaranteed auto-dismiss within 2 seconds
-    const safetyTimer = setTimeout(() => {
-      setIsDone(true);
-      onComplete();
-    }, 2000);
 
     return () => {
       clearInterval(timer);
-      clearTimeout(safetyTimer);
     };
-  }, [isOpen, safeTotal, onComplete]);
+  }, [isOpen, safeTotal, maxPendingPage]);
+
+  useEffect(() => {
+    if (!isOpen || !isCompleted) return;
+    setCurrentPage(safeTotal);
+    setIsDone(true);
+    const closeTimer = setTimeout(() => {
+      onComplete();
+    }, 400);
+    return () => clearTimeout(closeTimer);
+  }, [isOpen, isCompleted, safeTotal, onComplete]);
 
   if (!isOpen) return null;
 
